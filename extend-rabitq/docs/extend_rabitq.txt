@@ -1,0 +1,1402 @@
+                                               Practical and Asymptotically Optimal Quantization of
+                                           High-Dimensional Vectors in Euclidean Space for Approximate
+                                                              Nearest Neighbor Search
+                                                              Jianyang Gao                                                   Yutong Gou                                    Yuexuan Xu
+                                               Nanyang Technological University                              Nanyang Technological University                  Nanyang Technological University
+                                                         Singapore                                                     Singapore                                         Singapore
+                                                  jianyang.gao@ntu.edu.sg                                        yutong003@e.ntu.edu.sg                           yuexuan001@e.ntu.edu.sg
+arXiv:2409.09913v1 [cs.DB] 16 Sep 2024
+
+
+
+
+                                                              Yongyi Yang                                                   Cheng Long*                         Raymond Chi-Wing Wong
+                                                        University of Michigan                               Nanyang Technological University                The Hong Kong University of Science
+                                                                 USA                                                    Singapore                                     and Technology
+                                                         yongyi@umich.edu                                          c.long@ntu.edu.sg                                    Hong Kong
+                                                                                                                                                                    raywong@cse.ust.hk
+
+                                         ABSTRACT                                                                                      1   INTRODUCTION
+                                         Approximate nearest neighbor (ANN) query in high-dimensional                                  Nearest neighbor (NN) queries for vectors in high-dimensional
+                                         Euclidean space is a key operator in database systems. For this                               Euclidean space are a fundamental operator in database sys-
+                                         query, quantization is a popular family of methods developed for                              tems [20, 49, 58–60, 64, 71, 79], with a wide range of applications
+                                         compressing vectors and reducing memory consumption. Recently,                                such as retrieval-augmented generation [28] and information re-
+                                         a method called RaBitQ achieves the state-of-the-art performance                              trieval [40, 63]. However, due to the curse of dimensionality [34, 77],
+                                         among these methods. It produces better empirical performance in                              performing exact NN queries on large-scale databases becomes im-
+                                         both accuracy and efficiency when using the same compression rate                             practical because of their long response time. To balance time and
+                                         and provides rigorous theoretical guarantees. However, the method                             accuracy, researchers often turn to a relaxed alternative: the ap-
+                                         is only designed for compressing vectors at high compression rates                            proximate nearest neighbor (ANN) query [15, 29, 37, 44, 50].
+                                         (32x) and lacks support for achieving higher accuracy by using                                   In order to respond to user queries with low latency and high
+                                         more space. In this paper, we introduce a new quantization method                             accuracy, the majority of existing studies focus on the in-memory
+                                         to address this limitation by extending RaBitQ. The new method                                setting of ANN which assumes that a device has sufficiently large
+                                         inherits the theoretical guarantees of RaBitQ and achieves the as-                            RAM and mainly targets to optimize the search performance (the
+                                         ymptotic optimality in terms of the trade-off between space and                               time-accuracy trade-off) [6, 24, 32, 43, 44]. However, in real-world
+                                         error bounds as to be proven in this study. Additionally, we present                          systems, main memory is a precious resource. For example, in data-
+                                         efficient implementations of the method, enabling its application to                          base systems deployed on commodity PCs [48], clouds [31, 65, 71]
+                                         ANN queries to reduce both space and time consumption. Extensive                              and mobile devices [9, 13], memory consumption non-trivially af-
+                                         experiments on real-world datasets confirm that our method consis-                            fects the costs of services and the experience of users. Therefore,
+                                         tently outperforms the state-of-the-art baselines in both accuracy                            handling ANN queries with the minimal space usage while ensuring
+                                         and efficiency when using the same amount of memory.                                          strong search performance (i.e., achieving competitive efficiency at
+                                                                                                                                       90%, 95% and 99% recall) has become a crucial challenge. In partic-
+                                         ACM Reference Format:
+                                                                                                                                       ular, the space consumption in ANN queries is comprised of two
+                                         Jianyang Gao, Yutong Gou, Yuexuan Xu, Yongyi Yang, Cheng Long* , and Ray-
+                                         mond Chi-Wing Wong. 2018. Practical and Asymptotically Optimal Quanti-
+                                                                                                                                       parts, one for the vectors and the other for the index. The part
+                                         zation of High-Dimensional Vectors in Euclidean Space for Approximate                         for vectors usually dominates the overall consumption because
+                                         Nearest Neighbor Search. In Proceedings of ACM Conference (Conference’17).                    in most applications, they are embeddings produced by deep neu-
+                                         ACM, New York, NY, USA, 16 pages. https://doi.org/XXXXXXX.XXXXXXX                             ral networks [40, 51]. Each usually has hundreds or thousands of
+                                                                                                                                       dimensions and is correspondingly represented by hundreds or
+                                         * Corresponding author.                                                                       thousands of floating-point numbers. Thus, many existing stud-
+                                                                                                                                       ies target to reduce the memory consumption by compressing the
+                                                                                                                                       vectors [1, 8, 27, 29, 37, 46].
+                                         Permission to make digital or hard copies of all or part of this work for personal or
+                                         classroom use is granted without fee provided that copies are not made or distributed
+                                                                                                                                          To address this need, a well-known line of studies called product
+                                         for profit or commercial advantage and that copies bear this notice and the full citation     quantization (PQ) has been proposed [8, 29, 37, 46, 72]. During index-
+                                         on the first page. Copyrights for components of this work owned by others than ACM            ing, these methods first construct a quantization codebook. For each
+                                         must be honored. Abstracting with credit is permitted. To copy otherwise, or republish,
+                                         to post on servers or to redistribute to lists, requires prior specific permission and/or a   vector in the database, they find the nearest vector in the codebook
+                                         fee. Request permissions from permissions@acm.org.                                            as its quantized vector, which is represented and stored as a short
+                                         Conference’17, July 2017, Washington, DC, USA                                                 quantization code. During querying, they estimate the distances
+                                         © 2018 Association for Computing Machinery.
+                                         ACM ISBN 978-1-4503-XXXX-X/18/06. . . $15.00
+                                                                                                                                       between data and query vectors based on the quantization codes.
+                                         https://doi.org/XXXXXXX.XXXXXXX                                                               However, as has been widely reported [29, 37, 46], these methods
+can only produce poor recall (e.g., <80%) due to their severely lossy                             and random rotation operations on these vectors ensure that the
+compression (i.e., they mostly adopt a large compression rate of                                  codebook is composed of randomly rotated unit vectors, which
+≥32x). To recover the recall, PQ and its variants usually adopt a                                 allows our method to inherit the unbiasedness and the error bound
+re-ranking strategy [17, 72], which accesses the raw vectors and                                  of RaBitQ; and (2) the quantization code can be represented by a
+computes exact distances to find the NN. However, this entails to                                 𝐷-dimensional vector of 𝐵-bit unsigned integers (correspondingly
+store the raw vectors in main memory 1 , undermining their target                                 the size of the codebook is 2𝐵·𝐷 ) and the distance estimation can
+of saving space. On the other hand, when these methods are ap-                                    be supported by their arithmetic operations without exhaustively
+plied with a moderate compression rate (e.g., 8x or 4x) in order to                               decompressing the codes.
+produce reasonable recall without re-ranking, they often struggle                                     Furthermore, for the new quantization codebook above, we note
+to deliver competitive performance in terms of both accuracy and                                  that the task of finding the nearest vector of a data vector (when
+efficiency [1, 3] (e.g., they fail to outperform the classical scalar                             computing the quantization codes) is not as easy as the original
+quantization, see Section 5.2).                                                                   RaBitQ. Therefore, we propose a new efficient algorithm for this task
+   A recent study proposes a new scheme of quantization called                                    during indexing. We prove that our method achieves the asymptotic
+RaBitQ, which outperforms PQ and its variants both empirically                                    optimality in terms of the trade-off between space and error bounds
+and theoretically [27]. Empirically, compared with PQ, when using                                 for the estimation of inner product between unit vectors. Based on
+the same length of the quantization codes, the method produces                                    the experimental studies on real-world datasets (Section 5.2), we
+more accurate distance estimation with less time consumption.                                     also verify that with the same number of bits, our method produces
+Theoretically, unlike PQ and its variants which have no theoretical                               consistently better accuracy than the state-of-the-art method for
+guarantee, RaBitQ guarantees that its distance estimation is unbi-                                compressing vectors with a moderate compression rate (e.g., 8x or
+ased and has an asymptotically optimal error bound. Despite this,                                 4x).
+RaBitQ has the limitation that it only supports to compress a vector                                  In addition, we apply our method to ANN queries in combination
+with a large compression rate (i.e., it compresses a 𝐷-dimensional                                with the inverted-file index (IVF index) [37]. Beyond trivially using
+floating-point vector into a 𝐷-dimensional binary vector, which cor-                              it for distance estimation, we find that the efficiency of the method
+responds to 32x compression). In this case, without re-ranking, the                               can be further improved. In particular, in a quantization code of
+method can hardly produce reasonable recall either [27]. Consider-                                our method (a vector of 𝐵-bit unsigned integers), the concatenation
+ing the promising performance of RaBitQ at a large compression                                    of the most significant bits of all the dimensions is exactly equal
+rate, a natural question is how to extend the method to achieve                                   to the quantization code of the original RaBitQ (a vector of 0/1
+moderate compression rates so as to avoid the re-ranking step which                               values). Motivated by this, we split our quantization codes and
+entails storing the raw vectors. Ideally, this extension should (1)                               separately store their most significant bits and the remaining bits.
+maintain accurate distance estimation with both unbiasedness and                                  During querying, we first estimate a distance by accessing only
+asymptotic optimality concerning the trade-off between space and                                  the most significant bits (i.e., it produces exactly the estimated
+error bounds, and (2) enable efficient distance estimation.                                       distance based of the original RaBitQ). If the estimated distance
+   Nevertheless, to achieve both desiderata, the extension requires                               is sufficiently accurate to decide that a data vector cannot be the
+non-trivial designs. Let 𝐷 be the dimensionality of a vector. The                                 NN, then we drop it. Otherwise, we access the remaining bits and
+original RaBitQ uses 𝐷 bits to quantize a vector, which corresponds                               incrementally estimate a distance with higher accuracy based on the
+to a large compression rate of 32x. To achieve moderate compres-                                  complete bits. Because the distance estimation based on the most
+sion rates, we use (𝐵 ·𝐷) bits to quantize a vector, where 𝐵 is a small                           significant bits can be realized with a rather efficient SIMD-based
+integer. For example, when 𝐵 = 4 and 8, the compression rates are                                 implementation called FastScan [4] and the accuracy is sufficient
+8x and 4x respectively. Correspondingly, we need to construct a                                   for pruning many data vectors, this operation helps significantly
+codebook with 2𝐵·𝐷 vectors. According to the RaBitQ paper [27],                                   improve the efficiency.
+(1) the unbiasedness of the estimator holds on condition that the                                     We summarize our major contributions as follows.
+codebook is comprised of randomly rotated unit vectors; and (2)
+the efficient computation can be achieved because the vectors in                                     (1) We propose a new quantization method by extending RaBitQ.
+the codebook can be represented by binary vectors. When 𝐵 = 1                                            The method constructs the codebook via shifting, normaliz-
+(which reduces to the case of the original RaBitQ), there exists                                         ing and randomly rotating vectors of 𝐵-bit unsigned integers.
+a natural construction of the codebook, which satisfies both re-                                         Based on the design, it inherits RaBitQ’s unbiased estima-
+quirements - it constructs a codebook by randomly rotating the                                           tor for distance estimation. In addition, we prove that our
+vertices of a hypercube which are nested √ on the unit sphere, i.e.,                                     method achieves the asymptotic optimality in terms of the
+the vectors whose coordinates are ±1/ 𝐷 (see Section 2.2 for more                                        trade-off between space and error bounds of estimating inner
+details). However, when 𝐵 > 1 (which is the case that we target                                          product of unit vectors.
+in this paper), there is no such natural construction. To address                                    (2) We apply our method to ANN queries and introduce the effi-
+the issue, we propose to construct the codebook by shifting, nor-                                        cient implementation of first estimating a distance based on
+malizing and randomly rotating the vectors whose coordinates are                                         the most significant bits. When the accuracy is insufficient,
+𝐵-bit unsigned integers. The rationale is that (1) the normalization                                     we access the remaining bits to incrementally estimate a
+1 Another thread of studies access the raw vectors stored on disks for re-ranking [36, 73],
+                                                                                                         distance with higher accuracy.
+which saves memory by making a compromise in efficiency. We note that they are                       (3) We conduct extensive experiments on real-world datasets,
+orthogonal to vector compression and are out of the scope of the current study.                          which show that (1) our method provides more accurate
+                                                                                              2
+       distance estimation and higher recall than all the baselines on       the inner product of their normalized vectors. Then, it focuses on
+       all the tested datasets when using the same number of bits. At        estimating the inner product of the normalized vectors 2 .
+       a compression rate of about 6.4x and 4.5x, it stably produces             During the index phase, RaBitQ constructs a set C of all possible
+       over 95% and 99% recall respectively without accessing raw            bi-valued unit vectors, each consisting of values of + √1 and − √1 .
+                                                                                                                                         𝐷         𝐷
+       vectors for re-ranking; (2) the empirical performance of our          Then, it randomly rotates all vectors in C by multiplying them with
+       method is well aligned with the theoretical analysis.                 a random orthogonal matrix [39] (a type of Johnson-Lindenstrauss
+   The remainder of the paper is organized as follows. Section 2             Transformation) to form a quantization codebook C𝑟 . The process
+introduces the ANN query and preliminary techniques. Section 3               can be described with equations as follows.
+                                                                                                                                      1 𝐷
+                                                                                                                                        
+presents our method. Section 4 illustrates the application of RaBitQ                                                          1
+to the in-memory ANN search. Section 5 provides extensive experi-                      C𝑟 := 𝑃x x ∈ C , 𝑤ℎ𝑒𝑟𝑒 C := + √ , − √                      (3)
+                                                                                                                                𝐷      𝐷
+mental studies on real-world datasets. Section 6 discusses related
+                                                                             where 𝑃 is a random orthogonal matrix [39]. Note that the codebook
+work. Section 7 presents the conclusion and discussion.
+                                                                             is solely determined by the random orthogonal matrix 𝑃 since the
+                                                                             set of bi-valued unit vectors is pre-defined and does not rely on
+2 PRELIMINARIES                                                              the data. Thus, it maintains the codebook C𝑟 conceptually only by
+2.1 ANN Query                                                                sampling and storing the matrix 𝑃. For each data vector o, it finds the
+                                                                             nearest vector ō0 in C𝑟 as its quantized vector. The quantized vector
+Consider that there is a database which stores 𝑁 data vectors in the
+                                                                             is represented and stored as a quantization code x̄𝑏 ∈ {0, 1}𝐷 (a
+𝐷-dimensional Euclidean space. The nearest neighbor (NN) query
+                                                                             𝐷-bit string) - recall that each quantized vector has a corresponding
+targets to find the nearest data vector from the database for a given
+                                                                             bi-valued unit vector,    denoted by x̄0 , in C. Specifically, we have
+query vector q. Due to the curse of dimensionality, the query is                              
+often relaxed to the approximate nearest neighbor (ANN) query,               ō0 = 𝑃 x̄0 = 𝑃 √2 x̄𝑏 − √1 1𝐷 where 1𝐷 is the 𝐷-dimensional
+                                                                                               𝐷         𝐷
+which targets smaller time/space consumption by making a slight              vector whose coordinates are all ones.
+compromise on the accuracy (e.g., it targets to reach 90%, 95% or               During the query phase, it constructs an unbiased estimator for
+99% recall). In addition, the ANN query is often extended to finding         the inner product. The estimator has a theoretical error bound. We
+the 𝐾 nearest data vectors. For the ease of narrative, we assume             restate the estimator and its bound as follows.
+that 𝐾 = 1 in the algorithm description, while we note that our                                                                              ⟨ ō ,q⟩
+methods can be trivially applied to the query with any arbitrary                Lemma 2.1 (Restating Theorem 3.2 in [27]). ⟨ ō0 ,o⟩ is an unbi-
+                                                                                                                                               0
+𝐾’s. We focus on the in-memory ANN. However, unlike most of the              ased estimator of ⟨o, q⟩. With the probability of at least 1−exp(−𝑐 0𝜖02 ),
+existing studies on in-memory ANN which assume that the raw data             its error bound is presented as
+                                                                                                               √︄
+vectors are stored in RAM [6, 43, 44], our method targets to reduce
+                                                                                          ⟨ō0, q⟩                1 − ⟨ō0, o⟩ 2     𝜖0
+the memory consumption by compressing the raw data vectors and                                     − ⟨o, q⟩ ≤                    ·√                (4)
+storing only the compressed vectors in main memory. That is, we                           ⟨ō0, o⟩                  ⟨ō0, o⟩ 2
+                                                                                                                                    𝐷 −1
+target the setting where the raw vectors cannot be accessed during           where 𝑐 0 is a constant and 𝜖0 is a parameter which controls the failure
+querying so as to save the main memory consumption, and this                 probability of the bound.
+setting is the same as the one studied in [1].
+                                                                                It is proven that using RaBitQ to quantize a 𝐷-dimensional vector
+                                                                             to a 𝐷-bit string, the inner product ⟨ō0, o⟩ is highly concentrated
+2.2    The Quantization Method RaBitQ                                        around 0.8 [27]. Thus, the above lemma indicates that for estimating
+A recent paper proposes a new quantization method called Ra-                 the inner product of two 𝐷-dimensional
+                                                                                                                  √     unit vectors, it guarantees a
+BitQ [27], which quantizes a 𝐷-dimensional real vector into a 𝐷-bit          probabilistic error bound of 𝑂 (1/ 𝐷) with high probability, which
+string. It provides an unbiased estimator of squared distances and           achieves the asymptotic optimality [2]. In terms of the computation
+guarantees that the estimator has an asymptotically optimal error            of the estimator, we note that ⟨o, ō0 ⟩ is independent of the query
+bound, which always holds regardless of the data distribution.               and can be pre-computed before querying. The computation of
+    Specifically, given a raw data vector o𝑟 and a raw query vector          ⟨q, ō0 ⟩ can be conducted as follows.
+q𝑟 , it first normalizes the vectors based on a vector c (e.g., the                                          
+                                                                                                                2         1
+                                                                                                                                
+                                                                q −c
+centroid of a set of data vectors). Let o := ∥oo𝑟 −c  and q := ∥q𝑟 −c∥                        ⟨q, ō0 ⟩ = q, 𝑃 √ x̄𝑏 − √ 1𝐷                       (5)
+                                                𝑟 −c∥            𝑟                                              𝐷         𝐷
+be the normalized data and query vectors. The (squared) Euclidean                                                            𝐷
+distance between o𝑟 and q𝑟 can be expressed as follows.                                                     2            1 ∑︁ ′
+                                                                                                        = √ q′, x̄𝑏 − √         q [𝑖]             (6)
+                                                                                                            𝐷             𝐷 𝑖=1
+       ∥o𝑟 − q𝑟 ∥ 2 = ∥(o𝑟 − c) − (q𝑟 − c)∥ 2                      (1)       Here, q′ denotes 𝑃 −1 q and q′ [𝑖] denotes the 𝑖-th dimension of the
+                2            2
+      =∥o𝑟 − c∥ + ∥q𝑟 − c∥ − 2 · ∥o𝑟 − c∥ · ∥q𝑟 − c∥ · ⟨q, o⟩      (2)       vector q′ ; (5) plugs in the definition of ō and (6) applies 𝑃 −1 on
+                                                                                                                          Í𝐷 ′
+                                                                             both sides of the inner product. Note that 𝑖=1    q [𝑖] depends only
+Note that the distance ∥or − c∥ can be pre-computed in the index             on the query vector. Thus, its computation can be conducted once
+phase and ∥q𝑟 − c∥ can be computed when a query comes and can                and shared by many data vectors. For the computation of ⟨q′, x̄𝑏 ⟩,
+be shared by many data vectors. Therefore, the computation of                2Without further specification, in this paper, by data and query vectors, we refer to
+the distances between the raw vectors can be reduced to that of              their normalized vectors.
+                                                                         3
+[27] introduces two versions of implementation. One is based on
+a SIMD-based implementation called FastScan [4], which can effi-
+ciently compute the estimated distances for data vectors batch by
+batch. The other is based on bitwise operations, which supports
+to efficiently estimate distances for individual vectors. We refer
+readers to the original papers of RaBitQ [27] and FastScan [3–5]
+for more technical details and theoretical analysis. With all the pro-
+posed techniques, RaBitQ supports to unbiasedly estimate the inner
+product (and further unbiasedly estimate the squared distances)
+with both promising accuracy and efficiency.                                                Figure 1: This figure illustrates the quantization codebook
+                                                                                            of our method when 𝐵 = 2 in the 2-dimensional space. The
+3 EXTENDING RABITQ                                                                          empty blue points in the left panel represent the set G, i.e., a
+3.1 Motivations and Overview                                                                set of vectors on a uniform grid. The solid red points in the
+                                                                                            right panel represent the normalized vectors in G. Applying
+For ANN query, to avoid storing raw vectors in RAM and reach
+                                                                                            a random rotation on the red points yields the codebook G𝑟 .
+promising recall at the same time, it is necessary to compress
+the vectors with a moderate compression rate. Although RaBitQ                               the vectors can be hosted in a 𝐷-dimensional space. In contrast, it
+achieves an asymptotically optimal error bound when quantizing                              pads these vectors to (𝐵 · 𝐷) dimensions and applies RaBitQ in the
+𝐷-dimensional vectors into 𝐷-bit codes (which corresponds to a                              (𝐵 · 𝐷)-dimensional space. The codebook has the size of 2𝐵·𝐷 and
+rather high compression rate), it is still unclear how it can use                           thus, it produces the quantization codes of (𝐵 · 𝐷) bits. In intuition,
+more bits in pursuit of higher accuracy. In [27], it presents a simple                      given the same number of bits, a quantization algorithm would
+way to use more bits by padding the vectors. Specifically, it pads                          produce larger error when the vectors have higher dimensionality
+𝐷-dimensional vectors to (𝐵 · 𝐷) dimensions with zeros, and thus, it                        itself. Thus, it is likely that the sub-optimal accuracy is caused by
+can use (𝐵·𝐷) bits by directly applying RaBitQ. Based √ on Lemma
+                                                           √       2.1,                     the padding operation.
+in this case, it guarantees an error bound of 𝑂 (1/( 𝐵 · 𝐷)) with                              Instead of padding the vectors and constructing a codebook
+high probability. However, this result shows that the error decays                          with 2𝐵·𝐷 vectors in the (𝐵 · 𝐷)-dimensional space, we consider
+very slowly with respect to the number of bits used, indicating that                        constructing a codebook with 2𝐵·𝐷 vectors in the 𝐷-dimensional
+this simple extension is not very effective for the scenarios which                         space. Nevertheless, to inherit the unbiasedness and error bound of
+require a moderate compression rate.                                                        the estimator in RaBitQ and support efficient computation at the
+   To be more formal, we note that, with this simple extension,                             same time, the construction of the codebook is highly restrictive.
+to guarantee an error  bound 𝜖 with the failure probability of at                         First, the unbiasedness and the error bound (Lemma 2.1) hold on
+most 𝛿, it requires Θ 𝜖12 log 𝛿1 bits 3 . However, as has been proven                       condition that the codebook is constructed by randomly rotating
+by a theoretical study [2], to guarantee                                                    a set of unit vectors. Second, for efficient computation, it should
+                                            an error
+                                                       bound 𝜖,
+                                                                it is                     better support to directly compute the inner product based on the
+sufficient (and also necessary) to use Θ 𝐷 log 𝐷1 · 𝜖12 log 𝛿1 bits                         quantization codes without an exhaustive decompression step. We
+when the target accuracy is high 4 , i.e., when 𝜖12 log 𝛿1 > 𝐷. Note                        propose the following codebook G𝑟 to meet both requirements.
+that the required number of bits in this result of the theoretical                                              𝐵                                        𝐷
+                                                                                                                   2 −1
+study is logarithmic to 𝜖 −2 while the one in the former result of the                                  G := −            + 𝑢 𝑢 = 0, 1, 2, 3, ..., 2𝐵 − 1       (7)
+simple way of padding vectors is linear to 𝜖 −2 . For instance, when                                                  2
+ 1 log 1 = 𝐵 · 𝐷, the gap would be that between Θ (𝐷 log 𝐵) and
+                                                                                                                              
+                                                                                                                    y
+𝜖2      𝛿                                                                                              G𝑟 := 𝑃           y∈G                                    (8)
+Θ(𝐵 · 𝐷). This implies that when targeting higher accuracy with                                                    ∥y∥
+more bits used, there is still substantial room to improve from the                         Specifically, as is illustrated in Figure 1, we first consider the set
+simple extension of RaBitQ.                                                                 of vectors on the uniform grid G. Then we adopt their normalized
+   Motivated by the discussions above, in this paper, we propose a                                          y
+                                                                                            vectors (i.e., ∥y∥ in Equation (8)) and randomly rotate them by
+new quantization method, which extends RaBitQ to support moder-                             multiplying them with a random orthogonal matrix 𝑃) to form the
+ate compression rates and achieves asymptotically optimal estima-                           codebook G𝑟 . The rationale is that (1) G𝑟 is composed of randomly
+tion and efficient computation at the same time. Next, we present                           rotated unit vectors. Thus, it inherits the estimator in Lemma 2.1
+the details of our method, including (1) how it quantizes data vectors                      along with its unbiasedness and error bound 5 ; and (2) the vectors
+(Section 3.2), (2) how it computes distance estimators (Section 3.3),                       are generated by shifting, normalizing and rotating the vectors
+and (3) its summary and theoretical results (Section 3.4).                                  that consist of 𝐵-bit unsigned integers (Equation (7) and (8)). This
+                                                                                            enables efficient computation of inner product (see Section 3.3 for
+3.2     Quantizing Data Vectors                                                             details).
+3.2.1 Constructing a Codebook. We notice that the simple exten-                                In practice, the construction of the codebook is very simple. We
+sion in [27] provides sub-optimal accuracy because it ignores that                          only need to sample a random transformation matrix 𝑃 as RaBitQ
+3 This can be derived from the result in Lemma 2.1 by plugging in the parameters of 𝜖       5 For the new codebook, Lemma 2.1 exactly holds. However, it is worth noting that
+and 𝛿 .                                                                                     the inner product between the data vector and the quantized data vector in the new
+4 The result is restated directly from Theorem 4.1 in [2].                                  codebook increases with respect to 𝐵 . Thus, the error of the estimator decreases.
+                                                                                        4
+does [27], and then the codebook G𝑟 is determined. To store the                    ∥y𝑐𝑢𝑟 ∥ 7 . 𝑣𝑚𝑎𝑥 maintains the maximum value of ⟨y𝑐𝑢𝑟 /∥y𝑐𝑢𝑟 ∥, o′ ⟩
+codebook G𝑟 , we only need to store the sampled 𝑃, i.e., we maintain               based on the vectors that have been enumerated so far. 𝑡𝑚𝑎𝑥 main-
+the codebook G𝑟 , which contains 2𝐵·𝐷 vectors, conceptually. In                    tains the re-scaling factor which produces the maximum value 𝑣𝑚𝑎𝑥 .
+particular, it is worth noting that when setting 𝐵 = 1, the codebook               The enumeration starts from 𝑡 = 0 (line 1-2). Then iteratively, we
+is exactly the same as that of the original RaBitQ.                                enumerate the next smallest critical value (line 3-4). Based on the
+                                                                                   new re-scaling factor 𝑡, the vector y𝑐𝑢𝑟 will change in only one di-
+3.2.2 Computing the Quantization Codes of Data Vectors. Next we
+                                                                                   mension. Thus, we can update y𝑐𝑢𝑟 , ⟨y𝑐𝑢𝑟 , o′ ⟩ and ∥y𝑐𝑢𝑟 ∥ in 𝑂 (1)
+find for each data vector its nearest vector ō in the codebook G𝑟
+                                                                                   time (line 5). During the enumeration, we record the re-scaling
+as its quantized vector. Formally, for a vector o, we target to find
+                                                                                   factor which produces the maximum ⟨y𝑐𝑢𝑟 /∥y𝑐𝑢𝑟 ∥, o′ ⟩ (line 6-7).
+ō ∈ G𝑟 such that ∥ ō − o∥ 2 is minimized. Let ȳ be the corresponding
+                                                                                   The enumeration terminates when all the critical values have been
+vector of ō in G, i.e., ō = 𝑃 ȳ/∥ ȳ∥. Following [27], we simplify the
+                                                                                   enumerated (line 3). Finally, based on the re-scaling factor 𝑡𝑚𝑎𝑥 , we
+problem as follows.
+                                                                                   find the ȳ via re-scaling and rounding (line 8). We represent ȳ and
+                                    2                              
+                          y                                     y                  store it as a vector of unsigned integers ȳ𝑢 . Specifically, we have
+       ȳ = arg min 𝑃         − o = arg min 2 − 2 𝑃               ,o     (9)
+              y∈ G       ∥y∥               y∈ G               ∥y∥                  ȳ𝑢 = ȳ + (2𝐵 − 1)/2 · 1𝐷 where 1𝐷 is the vector whose coordinates
+                                                                               are all ones (line 9).
+                           y                       y
+          = arg max 𝑃         , o = arg max           , 𝑃 −1 o          (10)          The overall time complexity of the algorithm is 𝑂 (2𝐵 · 𝐷 log 𝐷)
+              y∈ G       ∥y∥             y∈ G     ∥y∥
+                                                                                   because in total we enumerate (2𝐵−1 · 𝐷) critical values and a min-
+where Equation (9) is derived from the definition of ȳ; Equation                  heap is needed to find the next smallest critical value during the
+(10) applies an orthonormal matrix 𝑃 −1 to both sides of the inner                 process (its maintenance takes 𝑂 (log 𝐷) time). We note that this
+product. For conciseness, let us denote o′ := 𝑃 −1 o. Now the ques-                time complexity is good enough for practical usage as our algorithm
+tion reduces to one of finding ȳ ∈ G such that Equation (10) is                   is designed for vector compression, i.e., 𝐵 is small. According to
+maximized.                                                                         our experimental studies in Section 5.2.2, 𝐵 = 7 suffices to stably
+   A natural idea is to enumerate the vectors in G, compute the                    produce > 99% recall and 𝐵 = 5 suffices to stably produce > 95%
+value of Equation (10) for each vector and find the vector ȳ. How-                recall. Under these settings, the quantization of a million-scale
+ever, enumerating all the vectors in G is not feasible as G contains               dataset of 3,072 dimensions can finish in a few minutes.
+2𝐵·𝐷 vectors. We observe that the enumeration can be significantly
+pruned based on the following lemma. The proof is left in Appen-                    Algorithm 1: Quantize
+dix A due to page limit.
+                                        D      E                                       Input : A 𝐷-dimensional vector o′ ; the number of bits per
+                                           y
+   Lemma 3.1. Let ȳ = arg maxy∈ G ∥y∥ , o′ . Then ∃𝑡 > 0 such                                  dimension 𝐵.
+that ∀y ∈ G, ∥𝑡 · o′ − ȳ∥ ≤ ∥𝑡 · o′ − y∥.                                             Output : The quantization code ȳ𝑢 .
+                                                                                   1 𝑡 ← 0, 𝑣𝑚𝑎𝑥 ← 0, 𝑡𝑚𝑎𝑥 ← 0
+    In intuition, this lemma indicates that for a vector o′ , if a vector
+ȳ has the largest cosine similarity from o′ among the set G, then                 2 Initialize y𝑐𝑢𝑟 , ⟨y𝑐𝑢𝑟 , o′ ⟩ and ∥y𝑐𝑢𝑟 ∥ with 𝑡 = 0
+                                                                                   3 while some critical values have not been enumerated do
+there must be a re-scaling factor 𝑡 such that ȳ also has the smallest
+Euclidean distance from the re-scaled vector 𝑡 · o′ among the set                  4     Update 𝑡 with the next smallest critical value
+G. Note that G is a set of vectors on uniform grids, the nearest                   5     Update y𝑐𝑢𝑟 , ⟨y𝑐𝑢𝑟 , o′ ⟩ and ∥y𝑐𝑢𝑟 ∥ with the new 𝑡
+vector of 𝑡 · o′ in G can be easily computed by rounding. This is                  6     if ⟨y𝑐𝑢𝑟 , o′ ⟩ /∥y𝑐𝑢𝑟 ∥ > 𝑣𝑚𝑎𝑥 then
+to say, if we “enumerate every re-scaling factor 𝑡” and collect all                7          𝑣𝑚𝑎𝑥 ← ⟨y𝑐𝑢𝑟 , o′ ⟩ /∥y𝑐𝑢𝑟 ∥, 𝑡𝑚𝑎𝑥 ← 𝑡
+the vectors produced by rounding 𝑡 · o′ , then the target vector ȳ
+                                                                                   8 Compute ȳ via re-scaling and rounding o′ with 𝑡𝑚𝑎𝑥
+must be included in the vectors that are collected in the process.                                                 𝐵
+                                                                                   9 return ȳ𝑢 where ȳ𝑢 = ȳ + (2 − 1)/2 · 1
+In practice, we do not need to enumerate every real value 𝑡 > 0
+because when two re-scaling factors are extremely close to each
+other, they would produce exactly the same vector after rounding.
+Thus, we only need to enumerate the critical values which change
+the results of rounding. Specifically, for a given 𝑡, assume that                  3.3     Computing the Estimator
+𝑡 · o′ [𝑖] is currently rounded to a number 𝑥. Then the next critical              Recall that we target to estimate the inner product ⟨o, q⟩ to further
+value of 𝑡 that rounds 𝑡 · o′ [𝑖] to (𝑥 + 1) is (𝑥 + 0.5)/o′ [𝑖]. As there         estimate the squared distances (Section 2.2). We adopt the estimator
+are 𝐷 dimensions and each dimension has 2𝐵−1 different values                      of RaBitQ to inherit its unbiasedness and error bound 8 (see empiri-
+after rounding 6 , we will in total enumerate up to (𝐷 · 2𝐵−1 ) critical           cal verification in Section 5.2.1), i.e., we use ⟨ō, q⟩ /⟨ō, o⟩ to estimate
+values and correspondingly, up to (𝐷 · 2𝐵−1 ) vectors in G.                        ⟨o, q⟩. The denominator ⟨ō, o⟩ is only related to the data vector and
+    To efficiently implement this idea, we enumerate the critical                  its quantized vector, so it can be pre-computed in the index phase.
+values in an ascending order. The algorithm is presented in Al-
+                                                                                                                                       ′
+                                                                                          𝑐𝑢𝑟 , we use two variables to store ⟨y𝑐𝑢𝑟 , o ⟩ and ∥y𝑐𝑢𝑟 ∥ . Whenever y𝑐𝑢𝑟 is
+                                                                                   7 For y
+gorithm 1. In this process, we dynamically maintain the vector
+                                                                                   updated, we can update these variables to obtain the new values of ⟨y𝑐𝑢𝑟 , o′ ⟩ and
+produced by rounding with y𝑐𝑢𝑟 (the vector that is currently be-                   ∥y𝑐𝑢𝑟 ∥ efficiently.
+ing enumerated). We use two variables to maintain ⟨y𝑐𝑢𝑟 , o′ ⟩ and                 8 This conclusion can be directly yielded from the proof in the original RaBitQ pa-
+                                                                                   per [27], i.e., Lemma 2.1 holds if (1) the codebook is a set of randomly rotated unit
+6 It is 2𝐵−1 instead of 2𝐵 because ȳ is in the same orthant of o′ .               vectors; and (2) ō is the nearest vector of o in the codebook.
+                                                                               5
+                                                                 ȳ
+Thus, we only need to compute ⟨ō, q⟩. Recall that ō = 𝑃 ∥ ȳ∥ . The               Remark (Empirical Formula). Let 𝜖 be the absolute error of
+following equations illustrate how it can be computed.                           estimating inner product
+                                                                                                     √    of unit vectors. With >99.9% probability, we
+                                                                             have 𝜖 < 2 −𝐵 · 𝑐𝜖 / 𝐷 where 𝑐𝜖 = 5.75.
+                        ȳ             ȳ                1
+        ⟨ō, q⟩ = 𝑃         ,q =           , 𝑃 −1 q =         ȳ, q′ (11)
+                      ∥ ȳ∥          ∥ ȳ∥             ∥ ȳ∥                        We note that the constant in this empirical formula is measured
+                                                   𝐷
+                                                            !                    with experimental studies, i.e., we use our algorithm to estimate
+                    1                   2𝐵 − 1 ∑︁ ′
+                =           ȳ𝑢 , q′ −               q [𝑖]           (12)        inner product and collect the statistics of errors (see Section 5.2.6).
+                  ∥ ȳ∥                     2 𝑖=1
+                                                                                 Comparison with the Algorithmic Proof in [2]. In the the-
+Here q′ denotes 𝑃 −1 q; Equation (11) applies an orthonormal matrix              oretical study [2], there is an algorithmic proof which achieves
+𝑃 −1 to both sides of the inner product; and Equation (12) expresses             the asymptotic optimality. However, we note that the algorithmic
+ȳ with its quantization code ȳ𝑢 , i.e., ȳ = ȳ𝑢 − (2𝐵 − 1)/2 · 1𝐷 .           proof is less practically applicable. Specifically, this proof relies on
+   Note that ∥ ȳ∥ is only related to the quantized vectors and can              the operation which represents different integers with different
+                                            Í𝐷 ′                                 number of bits. Based on this operation, [2] proves that the total
+be pre-computed in the index phase. 𝑖=1           q [𝑖] is only related to
+the query vector. It can be computed once and its time costs can                 number of bits needed is asymptotically optimal. This algorithm
+be shared by many data vectors. Thus, the remaining task is the                  is unfriendly to real-world systems because it is unclear how a
+computation of ⟨ȳ𝑢 , q′ ⟩, i.e., the inner product between a vector of          sequence of integers represented by different number of bits can
+unsigned integers and a vector of floating-point numbers. When 𝐵 =               be stored in alignment with each other. In contrast, our method
+1 (the case of the original RaBitQ), RaBitQ’s implementation can be              achieves both the asymptotic optimality and the practicality. To the
+directly applied [27]. When 𝐵 equals to 4 or 8, the implementations              best of our knowledge, our study is also the first which achieves
+in existing systems (for computing the inner product between a                   both desiderata at the same time. We would like to emphasize that
+vector of 4-bit or 8-bit unsigned integers and a vector of floating-             our work does not target the improvement in terms of theory. In-
+point numbers) can be directly applied [1, 17]. Other settings of 𝐵’s            stead, we propose a practically applicable algorithm and prove that
+can be implemented by splitting a vector of 𝐵-bit unsigned integers              it is asymptotically optimal.
+into several parts, where each part has the size of the power of 2
+(e.g., a vector of 9-bit unsigned integers can be split into a binary            4  APPLYING THE EXTENDED RABITQ TO
+vector and a vector of 8-bit unsigned integers). We will discuss the                IN-MEMORY ANN
+details of the idea later in Section 4.2.
+                                                                                 4.1 Using the Extended RaBitQ with IVF
+3.4    Summary and Theoretical Analysis                                          Next we apply the extended RaBitQ method to the in-memory ANN.
+                                                                                 Recall that as is discussed in Section 1, the present study targets to
+We summarize the workflow of the extended RaBitQ as follows. In                  compress vectors with a moderate compression rate such that it
+the index phase, the algorithm constructs a quantization codebook                can avoid storing raw vectors in RAM while still producing good
+by sampling a random orthogonal matrix 𝑃. It then applies 𝑃 −1 to                overall recall (e.g., >90%, >95% or >99%). Scalar quantization (SQ)
+the data vectors, normalizes them to obtain o′ and computes their                and its variants are the state-of-the-art and also the most popular
+quantization codes via Algorithm 1. In the query phase, when a                   methods in real-world systems for this need [1, 17, 52, 71]. We note
+query comes, it first applies 𝑃 −1 to the query vector and normalizes            that these methods are usually used together with IVF [17, 52, 71]
+it to obtain q′ . It can then unbiasedly estimate squared distances              or graph-based indices [1] for in-memory ANN query. In particular,
+based on Equation (12) and Equation (2).                                         IVF is a popular method that has been widely deployed in real-
+    Recall that as has been proved in [2] and discussed in Section 3.1,          world systems for vector search due to its simplicity and effective-
+to achieve an error bound 𝜖 where 𝜖12 log 𝛿1 > 𝐷, the minimum                    ness [17, 52, 71]. It has tiny index size and can be easily combined
+                                                    
+required number of bits is Θ 𝐷 log 𝐷1 · 𝜖12 log 𝛿1 . The follow-                 with various quantization methods due to its sequential memory
+ing theorem presents that our method achieves this asymptotic                    access pattern in querying. For graph-based indices, we note that
+optimality. The proof is left in Appendix B due to page limit.                   due to their random memory access pattern of querying, combin-
+                                                                                 ing them with SQ entails highly non-trivial efforts in engineering
+   Theorem 3.2. For 𝜖 > 0 where 𝜖12 log 𝛿1 > 𝐷, to ensure that the               optimization to make the combined method work competitively [1].
+error of the estimator is bounded by 𝜖 with
+                                            the probability
+                                                         of at least           Thus, in this paper, we focus on using the extended RaBitQ method
+1 − 𝛿, the algorithm requires 𝐵 = Θ log 𝐷1 · 𝜖12 log 𝛿1      .                   together with the IVF index and leave its combination with the
+                                                                                 graph-based indices as future work.
+    It is worth noting that the number of bits needed for each di-                  Specifically, the IVF method partitions the set of data vectors
+mension 𝐵 is logarithmic wrt 𝜖 −2 and is negatively related to the               into many clusters (e.g., via KMeans) in the index phase. Then
+dimensionality 𝐷. Besides the asymptotic analysis, to provide a                  when a query comes, it finds a few nearest centroids of the clusters
+more quantitative reference for practitioners, we would also like                and considers the vectors in these clusters as candidates of ANN.
+to present an empirical formula about the error. Note that when                  When IVF is used in combination with SQ, it computes an estimated
+𝐵 = 1√(the original setting of RaBitQ [27]), the error is bounded by             distance for every candidate based on its quantization code and
+𝑂 (1/ 𝐷) with high probability. When a larger 𝐵 is used, the error               then returns the vector with the smallest estimated distance as the
+is supposed to decay exponentially. Thus, we present the empirical               NN. Note that for reducing the memory consumption, when IVF is
+formula in the following form.                                                   used with SQ, it does not store the raw vectors in RAM and thus,
+                                                                             6
+there is no re-ranking based on the raw vectors. When using the                   distance based on the full bits as follows.
+                                                                                                           D                         E
+same number of bits for quantization, our method can produce
+                                                                                                 ȳ𝑢 , q′ = 2𝐵−1 · ȳ0 + ȳ𝑙𝑎𝑠𝑡 , q′                           (13)
+better accuracy than SQ and its variants (see experimental results
+                                                                                                                  𝐵−1           ′                 ′
+in Section 5.2.1). In addition, its computation can be conducted                                             =2     · ȳ0, q + ȳ𝑙𝑎𝑠𝑡 , q           (14)
+with exactly the same implementations of SQ (Section 3.3). Thus, it                                        ′
+                                                                                  In particular, as ⟨ȳ0, q ⟩ has been computed and can be reused, we
+is expected that simply replacing SQ with our method suffices to
+                                                                                  only need to access ȳ𝑙𝑎𝑠𝑡 and compute ⟨ȳ𝑙𝑎𝑠𝑡 , q′ ⟩. When 𝐵 = 5 and
+produce better time-accuracy trade-off (i.e., it improves the accuracy
+                                                                                  𝐵 = 9, ȳ𝑙𝑎𝑠𝑡 corresponds to vectors of 4-bit and 8-bit unsigned inte-
+while maintaining the efficiency).
+                                                                                  gers respectively and the computation of ⟨ȳ𝑙𝑎𝑠𝑡 , q′ ⟩ can be realized
+                                                                                  with existing implementations [1, 17, 82]. Moreover, we provide
+                                                                                  the implementations (including designs in both compact storage
+                                                                                  and efficient computation of inner product) for more settings of 𝐵’s
+                                                                                  (𝐵 = 3, 4, 7, 8) as they also provide valuable trade-off among space,
+                                                                                  time and accuracy. Due to the limit of space, we leave the details in
+                                                                                  our code repository.
+                        ...                                    ...
+                                                                                  5 EXPERIMENTS
+   Figure 2: Decomposition of the Quantization Code ȳ𝑢 .
+                                                                                  5.1 Experimental Setup
+4.2    Conducting Distance Comparison with the                                    Experimental Platform. All experiments are run on a ma-
+       Extended RaBitQ                                                            chine with two Intel Xeon Gold 6418H@4.0GHz CPUs (with Sap-
+                                                                                  phire Rapids architecture, 48 cores/96 threads) and 1TB RAM.
+Beyond trivially replacing SQ with our extended RaBitQ, we note                   The C++ source codes are compiled by GCC 11.4.0 with -Ofast
+that the efficiency of the method can be further improved. In par-                -march=native under Ubuntu 22.04 LTS. For all methods, by follow-
+ticular, a recent study finds that to reliably find the NN from a set             ing most of the existing studies and benchmarks [6, 24], the search
+of candidates, it is not necessary to compute an exact distance for               performance is evaluated in a single thread and the indexing time
+every candidate [26]. If an estimated distance can confirm that a                 is measured using multiple threads. The source code is available at
+candidate is unlikely to be the NN (e.g., a lower bound of the esti-              https://github.com/VectorDB-NTU/Extended-RaBitQ.
+mated distance is greater than the distance of the NN that has been
+                                                                                  Datasets. We evaluate the performance of different algorithms
+searched so far), then the candidate can be discarded. Otherwise,
+                                                                                  with six public real-world datasets with varying dimensionality and
+it can incrementally compute a more accurate estimated distance
+                                                                                  data types, whose details are presented in Table 1. These datasets
+until (1) it can confirm that a candidate is unlikely to be the NN; or
+                                                                                  encompass both (1) widely adopted benchmarks for evaluating ANN
+(2) the exact distance is computed [26].
+                                                                                  algorithms [6, 27, 43] (such as Word2Vec, MSong and GIST 9 ) and
+    Based on the idea above, in our case, we note that it is not
+                                                                                  (2) embeddings generated by advanced models (including OpenAI-
+always necessary to estimate a highly accurate distance with all
+                                                                                  1536 10 , OpenAI-3072 11 , Youtube 12 , and MSMARCO 13 ). It is worth
+bits of a quantization code. Instead, we first use a subset of bits of
+                                                                                  highlighting that OpenAI-1536 and OpenAI-3072 are produced
+the quantization code to efficiently estimate a distance with lower
+                                                                                  by the most powerful embedding model text-embedding-3-large
+accuracy. If this estimated distance can confirm that a candidate
+                                                                                  of OpenAI published in early 2024 [51]. They are generated for
+is unlikely to be the NN, then we discard it. Otherwise, we access
+                                                                                  evaluating ANN algorithms by Qdrant [60]. As for the set of query
+the remaining bits to compute a high-accuracy estimated distance
+                                                                                  vectors, for the datasets which provide the query set themselves,
+based on the full bits of the quantization code.
+                                                                                  we adopt their query set for testing. For others, we exclude 1,000
+    Specifically, in the quantization code ȳ𝑢 , every dimension cor-
+                                                                                  vectors from each dataset and use them as the query vectors.
+responds to an unsigned integer of 𝐵 bits. We observe that the
+concatenation of the most significant bits of all the dimensions of               Algorithms. In the experiments regarding the trade-off be-
+ȳ𝑢 (see Figure 2) exactly equals to the quantization code x̄𝑏 of the             tween the space and the accuracy of distance estimation (Sec-
+original RaBitQ. This is because both of them are decided by the                  tion 5.2.1), we evaluate the performance of the following meth-
+orthant of the vector o′ . This motivates us to split a quantization              ods. (1) RaBitQ (ext) is the extended RaBitQ method proposed
+code ȳ𝑢 into two parts, the code of the most significant bits ȳ0 and            in the current study. (2) RaBitQ (pad) is the simple extension of
+the code of the remaining bits ȳ𝑙𝑎𝑠𝑡 , where ȳ𝑢 = 2𝐵−1 · ȳ0 + ȳ𝑙𝑎𝑠𝑡 and       RaBitQ mentioned in the original RaBitQ paper which uses more
+ȳ0 = x̄𝑏 . In the query phase, for a set of candidates, we first estimate        bits by padding the vectors with zeros [27]. (3) SQ is the classic
+their distances based on their ȳ0 ’s, i.e., we compute ⟨ȳ0, q′ ⟩ with           uniform scalar quantization method. It has been widely deployed
+FastScan [4] as the original RaBitQ does, and further compute the                 in real-world systems [11, 52, 71, 79]. Specifically, SQ first collects
+estimated distances based on Lemma 2.1 and Equation (2). Note that                9 https://www.cse.cuhk.edu.hk/systems/hash/gqr/datasets.html.
+this estimated distance is exactly the estimated distance produced                10 https://huggingface.co/datasets/Qdrant/dbpedia-entities-openai3-text-embedding-
+
+by the original RaBitQ and it has a theoretical error bound. Then                 3-large-1536-1M
+                                                                                  11 https://huggingface.co/datasets/Qdrant/dbpedia-entities-openai3-text-embedding-
+we use the bound to decide whether the candidate is unlikely to be
+                                                                                  3-large-3072-1M
+the NN. If so, we drop the candidate. Otherwise, we access the code               12 https://research.google.com/youtube8m/download.html
+
+of the remaining bits ȳ𝑙𝑎𝑠𝑡 to incrementally compute an estimated                13 https://huggingface.co/datasets/Cohere/msmarco-v2.1-embed-english-v3
+
+                                                                              7
+                         Table 1: Dataset Statistics                                           error and (2) the maximum relative error on the estimated squared
+    Dataset                 Size       𝐷     Query Size                Data Type               distances. We measure the space with the number of bits per dimen-
+    MSong                 992,272     420        200                    Audio                  sion. Specifically, it sums up all the space consumption of a vector
+    Youtube               999,000    1,024      1,000                   Video                  and divides it by the dimensionality. Note that for our method, it
+  OpenAI-1536             999,000    1,536      1,000                    Text                  also covers the space for storing two floating-point numbers for
+  OpenAI-3072             999,000    3,072      1,000                    Text                  every vector, i.e., ∥o𝑟 − c∥ and 1/(∥y𝑢 ∥ · ⟨o, ō⟩). In the experiments
+   Word2Vec              1,000,000    300       1,000                    Text                  regarding the ANN query (Section 5.2.2), we adopt recall and aver-
+     GIST                1,000,000    960       1,000                   Image                  age distance ratio for measuring the accuracy of ANN search. Recall
+  MSMARCO               113,520,750 1,024       1,677                    Text                  is the percentage of successfully retrieved true nearest neighbors.
+                                                                                               Average distance ratio is the average of the distance ratios of the
+                                                                                               retrieved nearest neighbors over the true nearest neighbors. These
+the minimum value 𝑣𝑙 and maximum value 𝑣𝑟 among all the coor-                                  metrics are widely adopted to measure the accuracy of ANN algo-
+dinates of all the vectors. Then, the method uniformly splits the                              rithms [6, 25, 33, 43, 56, 66]. We adopt query per second (QPS), i.e.,
+range of values [𝑣𝑙 , 𝑣𝑟 ] into 2𝐵 − 1 segments. Each floating point                           the number of queries a method can handle in a second, to measure
+number is then rounded to its nearest boundary of the segments                                 the efficiency. It is widely adopted to measure the efficiency of
+and is represented and stored as a 𝐵-bit unsigned integer. (4) LVQ                             ANN algorithms [6, 43, 74]. Following [6, 43, 74], the query time is
+is the latest variant of SQ [1]. Different from SQ which collects                              evaluated in a single thread and the search is conducted for each
+the smallest and largest values 𝑣𝑙 and 𝑣𝑟 among all the vectors and                            query individually (instead of queries in a batch). All the metrics
+performs quantization based on this global range of values [𝑣𝑙 , 𝑣𝑟 ],                         are measured on every single query and averaged over the whole
+LVQ collects the 𝑣𝑙 and 𝑣𝑟 for every individual vector and performs                            query set. We also report the time costs of different methods in the
+quantization of a vector based on its specific range of values [𝑣𝑙 , 𝑣𝑟 ].                     index phase.
+(5) PQ and (6) OPQ are popular quantization methods which are
+                                                                                               Parameter Settings in ANN Query. In the IVF index, we set the
+usually used with a large compression rate. They are widely de-                                number of clusters to be 4,096 for million-scale datasets by following
+ployed in real-world systems [52, 71, 79]. Note that these methods                             the suggestions of Faiss [21]. For the MSMARCO dataset, we use
+have two settings 𝑘 = 4 or 𝑘 = 8 (𝑘 is the number of bits allo-                                262,144 clusters. For our method, we implement our algorithm
+cated for quantizing each sub-vector in these methods; see details                             with 𝐵 = 3, 4, 5, 7, 8, 9 and conduct ANN query with the strategy
+in their original papers [29, 37]). Since 𝑘 = 8 produces consistently                          presented in Section 4. For the alignment of data, we pad the vectors
+better space-accuracy trade-off than 𝑘 = 4, we report the results                              with zeros such that their dimensionality is a multiple of 64 (i.e., we
+of PQ and OPQ with 𝑘 = 8. It is worth noting that when using                                   pad the dimensionality of MSong to 448 and that of Word2Vec to
+the same number of bits per dimension, SQ, RaBitQ (ext) and LVQ                                320). For LVQ, we apply the settings 𝐵 = 4 and 𝐵 = 8 in its original
+have almost the same efficiency in computing inner product and                                 paper [1].
+Euclidean distances. However, as has been reported [1, 27], PQ and
+OPQ have significantly worse efficiency since their computation
+relies on frequently looking up tables in RAM. Recall that we target                           5.2    Experimental Results
+to compress vectors such that we do not need to access raw vectors                             5.2.1 Space-Accuracy Trade-Off for Distance Estimation. In this
+for re-ranking while still producing reasonable recall. Therefore,                             experiment, we evaluate different quantization methods by using
+we focus on evaluating these methods in a moderate compression                                 them for estimating the distances between data vectors and query
+rate, i.e., the number of bits per dimension ranges from 1 to 10.                              vectors. For each method, in Figure 3, we vary their number of
+When a larger compression rate is used, none of methods can sta-                               bits and plot the curves of the average relative error (left panels,
+bly produce over 90% recall without re-ranking. When a smaller                                 lower left is better) and maximum relative error (right panels, lower
+compression rate is used, it would be wasteful since 10 bits per                               left is better) to investigate their space-accuracy trade-off. We, in
+dimension suffice to produce nearly perfect recall. In addition, in                            particular, focus on the number of bits from 𝐵 = 1 to 𝐵 = 10 which
+this experiment, as a pre-procession for all the methods, we center                            correspond to a moderate compression rate. Note that 𝐵 = 8 suffices
+the datasets with their global centroid 14 . In the experiments re-                            to produce > 99% recall (Section 5.2.2).
+garding the ANN query (Section 5.2.2), based on the experimental                                  According to Figure 3, our method (the green curve) stably
+results in Section 5.2.1, we compare our method with the most                                  achieves better accuracy than all the baseline methods on all the
+competitive baseline LVQ [1]. We combine our method and LVQ                                    tested datasets when using the same number of bits. Specifically, we
+with the IVF index as is discussed in Section 4. In this experiment,                           have the following observations. (1) RabitQ (ext) v.s. SQ and LVQ:
+as a pre-procession for all the methods, we center every cluster in                            We observe that when 𝐵 > 6, under the same number of bits, the
+the IVF index with its local centroid. All the methods are optimized                           average relative error of LVQ is consistently larger than ours by
+with the SIMD instructions till AVX512.                                                        1.3x-3.1x (the gap of SQ’s error from ours is even larger). When
+Performance Metrics. In the experiments regarding the trade-off                                𝐵 < 6, the gap is even larger. It is worth noting that when 𝐵 = 1 or
+between the space and the accuracy of distance estimation (Sec-                                𝐵 = 2, LVQ and SQ hardly produce reasonable accuracy and their
+tion 5.2.1), we measure the accuracy with (1) the average relative                             errors are larger than ours by orders of magnitude. Note that for our
+                                                                                               method, LVQ and SQ, the computation of distances or inner product
+14With the centroid c, the centering operation is to replace every data and query vector       can be implemented in almost identical ways (Section 3.3). This
+a with a − c.                                                                                  result implies that simply replacing SQ and LVQ in existing systems
+                                                                                           8
+                                                                                                             SQ                  LVQ               RabitQ (ext)                                         RabitQ (pad)                OPQ              PQ
+                                                      MSong                                                                            MSong                                                                               Youtube                                                                          Youtube
+                                  2                                                                                                                                                                 2
+                             10                                                                                                                                                                10
+                                                       out of range (>100%)                                                            out of range (>500%)                                                                 out of range (>100%)                                                             out of range (>500%)
+                                                                                                                                                                                                                                                                                        2
+
+
+
+
+                                                                               Maximum Relative Error (%)
+
+
+
+
+                                                                                                                                                                                                                                                      Maximum Relative Error (%)
+                                                                                                                                                                                                                                                                                   10
+Average Relative Error (%)
+
+
+
+
+                                                                                                                                                                  Average Relative Error (%)
+                                                                                                                 2
+                                  1                                                                         10                                                                                 10
+                                                                                                                                                                                                    1
+                             10
+                                                                                                                                                                                                                                                                                        1
+                                                                                                                 1                                                                                  0                                                                              10
+                             10
+                                  0
+                                                                                                            10                                                                                 10
+                                                                                                                                                                                                                                                                                        0
+                                  1                                                                                                                                                            10
+                                                                                                                                                                                                    1                                                                              10
+                             10                                                                             10
+                                                                                                                 0
+
+                                                                                                                                                                                                                                                                                        1
+                                  2                                                                                                                                                            10
+                                                                                                                                                                                                    2                                                                              10
+                             10                                                                                  1
+                                                                                                            10
+                                      1   2   3   4   5   6   7    8    9 10                                         1   2   3    4    5   6   7     8   9 10                                             1   2   3    4    5   6    7    8   9 10                                          1   2   3   4    5   6    7   8   9 10
+                                              # of bits per dimension                                                        # of bits per dimension                                                              # of bits per dimension                                                           # of bits per dimension
+                                                   OpenAI-1536                                                                    OpenAI-1536                                                                          OpenAI-3072                                                                       OpenAI-3072
+                                  2                                                                                                                                                                 2
+                             10                                                                                                                                                                10                           out of range (>100%)
+                                                       out of range (>100%)                                                            out of range (>500%)                                                                                                                                                  out of range (>500%)
+                                                                                                                 2                                                                                                                                                                      2
+                                                                                                                                                                                                                                                                                   10
+                                                                               Maximum Relative Error (%)
+
+
+
+
+                                                                                                                                                                                                                                                      Maximum Relative Error (%)
+                                                                                                            10
+Average Relative Error (%)
+
+
+
+
+                                                                                                                                                                  Average Relative Error (%)
+                                  1                                                                                                                                                                 1
+                             10                                                                                                                                                                10
+                                                                                                                 1                                                                                                                                                                      1
+                                  0                                                                         10                                                                                      0                                                                              10
+                             10                                                                                                                                                                10
+                                                                                                                                                                                                                                                                                        0
+                                                                                                            10
+                                                                                                                 0                                                                                  1                                                                              10
+                             10
+                                  1                                                                                                                                                            10
+                                                                                                                                                                                                                                                                                        1
+                                  2                                                                         10
+                                                                                                                 1
+                                                                                                                                                                                               10
+                                                                                                                                                                                                    2                                                                              10
+                             10
+
+                                      1   2   3   4   5   6    7   8    9 10                                         1   2   3    4    5   6   7     8   9 10                                             1   2   3    4    5   6    7    8   9 10                                          1   2   3   4    5   6    7   8   9 10
+                                              # of bits per dimension                                                        # of bits per dimension                                                              # of bits per dimension                                                           # of bits per dimension
+                                                     Word2Vec                                                                       Word2Vec                                                                                GIST                                                                              GIST
+                                  2                                                                                                                                                                 2
+                             10                                                                                                                                                                10
+                                                       out of range (>100%)                                                            out of range (>500%)                                                                 out of range (>100%)                                                             out of range (>500%)
+                                                                                                                                                                                                                                                                                        2
+                                                                               Maximum Relative Error (%)
+
+
+
+
+                                                                                                                                                                                                                                                      Maximum Relative Error (%)
+                                                                                                                 2
+                                                                                                                                                                                                                                                                                   10
+Average Relative Error (%)
+
+
+
+
+                                                                                                                                                                  Average Relative Error (%)
+
+
+
+
+                                  1                                                                         10                                                                                      1
+                             10                                                                                                                                                                10
+
+                                                                                                                 1                                                                                                                                                                      1
+                                  0                                                                         10                                                                                 10
+                                                                                                                                                                                                    0                                                                              10
+                             10
+                                                                                                                                                                                                                                                                                        0
+                                  1                                                                         10
+                                                                                                                 0
+                                                                                                                                                                                               10
+                                                                                                                                                                                                    1                                                                              10
+                             10
+
+                                                                                                                                                                                                    2                                                                                   1
+                             10
+                                  2
+                                                                                                            10
+                                                                                                                 1                                                                             10                                                                                  10
+
+                                      1   2   3   4   5   6   7    8    9 10                                         1   2   3    4    5   6   7     8   9 10                                             1   2   3    4    5   6    7    8   9 10                                          1   2   3   4    5   6    7   8   9 10
+                                              # of bits per dimension                                                        # of bits per dimension                                                              # of bits per dimension                                                           # of bits per dimension
+
+                                                                        Figure 3: Space-Accuracy Trade-Off for Distance Estimation (Log-Scale).
+with our method would stably improve the performance. Moreover,                                                                                                                                 that RaBitQ (pad) is competitive when the number of bits per di-
+when a small 𝐵 is adopted, the improvement would be especially                                                                                                                                  mension is small (e.g., 1 or 2). However, the error of RaBitQ (pad)
+significant. This unique advantage enables our method to compute                                                                                                                                also decays slowly. This is because as has been theoretically
+                                                                                                                                                                                                                                                        √ proved
+a fairly accurate distance based on the first bit of the quantization                                                                                                                           in Lemma B.3 [27], its error decays in a trend of 𝑂 (1/ 𝐵 · 𝐷). As
+codes and prune many candidates, which improves the efficiency. It                                                                                                                              a comparison, the errors of our method, SQ and LVQ decay in an
+will be reflected later in Section 5.2.2. (2) PQ and OPQ: We find that                                                                                                                          exponential trend with respect to 𝐵.
+PQ and OPQ have reasonable accuracy in most datasets when the
+number of bits per dimension is small (e.g., 1 or 2). However, when
+                                                                                                                                                                                               5.2.2 Time-Accuracy Trade-Off for ANN Query. In this experiment,
+the number of bits increases, the errors of these methods do not
+                                                                                                                                                                                               we evaluate different quantization methods by using them in com-
+decay as fast as our method, SQ or LVQ. In particular, PQ and OPQ
+                                                                                                                                                                                               bination with the IVF index for ANN queries. In Figure 4, we plot
+fail to outperform SQ and LVQ usually when the number of bits
+                                                                                                                                                                                               for the methods their curves of “QPS”-“Recall” (left panels, upper
+per dimension is ≥ 4. This result has also been observed in the LVQ
+                                                                                                                                                                                               right is better) and curves of “QPS”-“Average Distance Ratio” (right
+paper [1]. Moreover, it has also been reported that the efficiency
+                                                                                                                                                                                               panels, upper left is better) by varying the number of clusters to
+of PQ and OPQ is significantly worse than SQ and LVQ because
+                                                                                                                                                                                               probe to investigate their time-accuracy trade-off. In Table 2, we
+for computing distances or inner product, they rely on looking up
+                                                                                                                                                                                               report the space consumption of different methods for ANN query.
+tables in RAM [1, 3]. When FastScan is applied to accelerate the
+                                                                                                                                                                                               We note that using the same 𝐵, our method has slightly larger space
+computation (which requires to set 𝑘 = 4), the space-accuracy trade-
+                                                                                                                                                                                               consumption (e.g., by less than 0.01 GB on million-scale datasets)
+off would be even worse [4]. These results indicate that PQ and
+                                                                                                                                                                                               than the baseline because our method uses FastScan to estimate
+OPQ can hardly be competitive in compressing high-dimensional
+                                                                                                                                                                                               distances batch by batch. When a batch is not full, we still allocate
+vectors with moderate compression rates. (3) RaBitQ (pad): We find
+                                                                                                                                                                                               the memory for a full batch.
+                                                                                                                                                                  9
+                  RaBitQ (3-bit)         RaBitQ (4-bit)                RaBitQ (5-bit)               RaBitQ (7-bit)                  RaBitQ (8-bit)               RaBitQ (9-bit)                 LVQ (4-bit)                LVQ (8-bit)
+                       MSong                                                     MSong                                                                 Youtube                                                           Youtube
+      4×                                                 4×                                                              103                                                              103
+      2×                                                 2×                                                              6×                                                               6×
+                                                                                                                         4×                                                               4×
+      103                                                103                                                             2×                                                               2×
+      6×                                                 6×
+QPS
+
+
+
+
+                                                   QPS
+
+
+
+
+                                                                                                                   QPS
+
+
+
+
+                                                                                                                                                                                    QPS
+                                                                                                                         102                                                              102
+      4×                                                 4×                                                              6×                                                               6×
+                                                                                                                         4×                                                               4×
+      2×                                                 2×                                                              2×                                                               2×
+      102                                                102                                                             101                                                              101
+            80   85       90        95       100               1.000    1.002    1.004       1.006      1.008                  80            85          90         95        100                1.0000 1.0005 1.0010 1.0015 1.0020
+                       Recall(%)                                         Average Distance Ratio                                                    Recall(%)                                                  Average Distance Ratio
+                      OpenAI-1536                                            OpenAI-1536                                                          OpenAI-3072                                                     OpenAI-3072
+      103                                                103                                                             4×                                                               4×
+      6×                                                 6×                                                              2×                                                               2×
+      4×                                                 4×
+      2×                                                 2×                                                              102                                                              102
+                                                                                                                         6×                                                               6×
+QPS
+
+
+
+
+                                                   QPS
+
+
+
+
+                                                                                                                   QPS
+
+
+
+
+                                                                                                                                                                                    QPS
+      102                                                102                                                             4×                                                               4×
+      6×                                                 6×
+      4×                                                 4×                                                              2×                                                               2×
+      2×                                                 2×                                                              101                                                              101
+            80   85       90        95       100               1.000     1.002      1.004       1.006                          80            85          90         95        100                 1.000       1.002       1.004    1.006     1.008
+                       Recall(%)                                         Average Distance Ratio                                                      Recall(%)                                                Average Distance Ratio
+                       Word2Vec                                                Word2Vec                                                                GIST                                                           GIST
+      2×                                                 2×                                                              103                                                              103
+                                                                                                                         6×                                                               6×
+      103                                                103                                                             4×                                                               4×
+      6×                                                 6×
+      4×                                                 4×                                                              2×                                                               2×
+QPS
+
+
+
+
+                                                   QPS
+
+
+
+
+                                                                                                                   QPS
+
+
+
+
+                                                                                                                                                                                    QPS
+      2×                                                 2×                                                              102                                                              102
+      102                                                102                                                             6×                                                               6×
+      6×                                                 6×                                                              4×                                                               4×
+      4×                                                 4×
+      2×                                                 2×                                                              2×                                                               2×
+            80   85       90        95       100               1.000        1.001           1.002          1.003               80            85          90         95        100                 1.000 1.001 1.002 1.003 1.004 1.005
+                       Recall(%)                                         Average Distance Ratio                                                      Recall(%)                                                Average Distance Ratio
+
+Figure 4: Time-Accuracy Trade-Off for the ANN Query (Log-Scale), 𝐾 = 100. All the methods are combined with the IVF index.
+
+
+   According to Figure 4, we have the following observations.                                                            other datasets which have lower dimensionality would be smaller.
+(1) Time-accuracy trade-off: We observe that with the same num-                                                          Based on the results in Figure 4 and Table 3, we observe that when
+ber of bits (4-bit and 8-bit), our method outperforms LVQ in terms                                                       setting 𝐵 = 5 and 𝐵 = 7, it suffices to produce >95% and >99% recall
+of time-accuracy trade-off. It is worth highlighting that the im-                                                        respectively, and the quantization can finish in a few minutes. Thus,
+provement in efficiency under the same recall is significant since                                                       the time for quantizing data vectors in the index phase is not a
+our method can prune many candidates with the estimated dis-                                                             bottleneck in practical usage.
+tances based on the first bits of the quantization codes. In addition,
+the estimation can be implemented with FastScan [4] which is
+highly efficient (Section 4.2). (2) Recall: We find that 4-bit, 5-bit                                                                        RaBitQ (3-bit)    RaBitQ (5-bit)                           RaBitQ (8-bit)         LVQ (4-bit)
+                                                                                                                                             RaBitQ (4-bit)    RaBitQ (7-bit)                           RaBitQ (9-bit)         LVQ (8-bit)
+and 7-bit quantization suffices to produce over 90%, 95% and 99%
+                                                                                                                                                       MSMARCO                                                           MSMARCO
+recall on all the tested datasets respectively without re-ranking.                                                              4×                                                              4×
+                                                                                                                                2×                                                              2×
+(3) Average distance ratio: We observe that the average distance                                                                  102                                                             102
+                                                                                                                                64 ××                                                           64 ××
+ratio produced by 5-bit quantization of our method is nearly perfect                                                             2×                                                              2×
+                                                                                                                          QPS
+
+
+
+
+                                                                                                                                                                                          QPS
+
+
+
+
+across all the datasets while it cannot achieve perfect recall (i.e., it                                                          101                                                             101
+                                                                                                                                 64 ×
+                                                                                                                                    ×                                                            64 ×
+                                                                                                                                                                                                    ×
+usually produces 97% recall only). This indicates that the retrieved                                                              2×                                                              2×
+data vectors have their distances from the query extremely close                                                                  100                                                             100
+                                                                                                                                        80        85          90         95         100            1.0000 1.0025 1.0050 1.0075 1.0100 1.0125
+to those of the true NNs. (4) Results on datasets from OpenAI: We                                                                                         Recall(%)                                              Average Distance Ratio
+find that the ANN algorithm with our method on these datasets                                                                                Figure 5: Verification Study for Scalability.
+is highly robust, e.g., 3-bit quantization suffices to produce > 95%
+recall.                                                                                                                  5.2.4 Verifying the Scalability. In this section, we study the scal-
+                                                                                                                         ability of our method on the MSMARCO dataset with about 100
+5.2.3 Time of Quantizing in the Indexing Phase. In this section,                                                         millions of 1,024-dimensional data vectors. We report that the quan-
+we report the time for quantizing the vectors in the index phase                                                         tization of the dataset with 𝐵 = 9 can be finished in around 2 hours,
+based on different 𝐵’s. This time includes both (1) the time for                                                         which is not a bottleneck (as a comparison, building the IVF index
+multiplying by 𝑃 −1 the data vectors and (2) the time for computing                                                      for the dataset takes more than 1 day). Figure 5 reports the time-
+the quantization codes, i.e., Algorithm 1. Due to the limit of space,                                                    accuracy trade-off for ANN queries. It shows that our method still
+we only report the results on the dataset OpenAI-3072 which has                                                          achieves consistently better time-accuracy trade-off compared with
+the highest dimensionality. It is clear that the quantization time for                                                   LVQ. In particular, with our method, using 𝐵 = 4 suffices to produce
+                                                                                                                10
+                                           Table 2: Space Consumption for ANN Query (GB).
+                           Raw Vectors     RaBitQ-3 RaBitQ-4 RaBitQ-5 RaBitQ-7 RaBitQ-8                                                    RaBitQ-9                            LVQ-4       LVQ-8
+            MSong              1.56           0.18      0.23     0.28       0.39    0.44                                                     0.49                                0.22       0.41
+            Youtube            3.82           0.40      0.52     0.64       0.87    0.99                                                     1.11                                0.51       0.98
+          OpenAI-1537          5.72           0.59      0.77     0.95       1.31    1.48                                                     1.66                                0.75       1.47
+          OpenAI-3072         11.44          1.19       1.54    1.90       2.62     2.97                                                     3.33                               1.49        2.92
+           Word2Vec            1.12           0.13      0.17     0.21       0.28    0.32                                                     0.35                                0.16       0.30
+             GIST              3.58           0.37      0.48     0.60       0.82    0.93                                                     1.04                                0.48       0.92
+          MSMARCO            433.47          43.41     56.94    70.48      97.54   111.07                                                   124.61                              56.86      110.99
+                                                                                                                  99.9% Quantile of Empirical Errors                           = c 2 B/ D, c = 5.75
+Table 3: Time for quantizing the data vectors in OpenAI-3072                                                          D = 1000                                                             B=4
+(∼ 106 vectors) with 96 threads/48 cores.                                                                                                                          0.035
+                                                                                               0.08
+             𝐵       1     2      3       4       5                                                                                                                0.030
+
+
+
+
+                                                                              Absolute Error
+
+
+
+
+                                                                                                                                                  Absolute Error
+          Time (s) 43.8 47.7 52.6       58.1    64.6                                           0.06                                                                0.025
+             𝐵       6     7      8       9      10                                            0.04                                                                0.020
+          Time (s) 76.0 98.3 143.7 233.2 418.1                                                                                                                     0.015
+                                                                                               0.02
+                                                                                                                                                                   0.010
+>95% recall without re-ranking. In this case, the space consumption                            0.00                                                                0.005
+of our method is 56.94 GB while the raw dataset takes 433.47 GB.                                      1   2   3   4    5       6   7   8   9 10                            0       1000     2000      3000   4000
+                                                                                                                           B                                                                 D
+                                                                              Figure 7: Measure the Constants in the Empirical Formula.
+
+                                                                              curve). In the right panel, on the other hand, we fix 𝐵 = 4 and plot
+                                                                              the curve of the 99.9% quantile of the empirical errors with respect
+                                                                              to 𝐷 (the red curve).
+                                                                                                √    Note that our empirical formula is in the form
+                                                                              of 𝜖 < 𝑐𝜖 · 2 −𝐵 / 𝐷 (see Section 3.4). We measure
+                                                                                                                              √ the constant 𝑐𝜖 by
+                                                                              tuning 𝑐𝜖 such that the curve of 𝜖 = 𝑐𝜖 · 2 −𝐵 / 𝐷 (the green curve)
+                                                                              is higher than the curve of the 99.9% quantile of the empirical errors.
+                                                                              The result shows that when 𝑐𝜖 = 5.75, the curves match well.
+
+                                                                              6                  RELATED WORK
+                                                                              Quantization. A substantial body of literature on the quanti-
+        Figure 6: Verification Study for Unbiasedness.                        zation of high-dimensional vectors exists across various fields,
+5.2.5 Verifying the Unbiasedness. In this section, we verify that             including machine learning, computer vision, and data manage-
+based on our new codebook with more vectors than those of the                 ment [1, 8, 22, 29, 30, 37, 38, 46, 54, 68, 68, 77, 81]. We refer readers
+original RaBitQ method, the estimator is still unbiased. Due to the           to comprehensive surveys and textbooks [19, 47, 62, 70, 72, 80]. The
+limit of space, we only present the results for 𝐵 = 2, 3 in two panels        existing studies about quantization can be divided into roughly
+of Figure 6 respectively. In each panel, we collect around 107 pairs          two threads: (1) PQ and its variant [8, 29, 37, 46, 54] and (2) SQ
+of the estimated squared distances and the true squared distances             and its variants [1, 22, 77]. We note that although the family of
+(between the first 10 query vectors and about 106 data vectors in             PQ and the family of SQ have highly diversified schemes, they
+the OpenAI-3072 dataset) which are normalized with the maximum                can be presented in a unified framework: (1) in the index phase,
+true squared distances. To verify the unbiasedness, we fit these pairs        they construct a quantization codebook and for each data vector,
+with linear regression and plot the result with the black dashed line.        they find the nearest vector in it as the quantized data vector; and
+Note that in all panels, this line has the slope of 1 and the y-axis          (2) in the query phase, they estimate the distance between a data
+intercept of 0. This indicates that our method provides unbiased              vector and a query vector based on the quantized data vector. De-
+distance estimation.                                                          spite this, we observe that in existing literature [17, 29, 37, 45, 47],
+                                                                              PQ and SQ were seldom compared to each other 15 . Indeed, PQ
+5.2.6 Measuring the Empirical Formula among 𝜖, 𝐷 and 𝐵. In this
+                                                                              and its variants are used mostly in the scenarios with large com-
+section, we measure the constants in the empirical formula which
+                                                                              pression rates [17, 29, 37, 45, 47, 70, 72, 81] while SQ and its vari-
+presents the relationship among the absolute error of estimating
+                                                                              ants are used mostly in the scenarios with moderate compression
+inner product between unit vectors, 𝐵 and 𝐷 (see Section 3.4). In
+                                                                              rates [1, 17, 71, 79]. According to our experimental results in Sec-
+particular, for a pair of 𝐵 and 𝐷, we randomly sample 5 × 106 pairs
+                                                                              tion 5.2.1, we find that with moderate compression rates (e.g., quan-
+of unit vectors (i.e., each vector is sampled from standard Gaussian
+                                                                              tizing the vectors with ≥ 4 bits per dimension), PQ does not out-
+distribution and is normalized then), apply our method to estimate
+                                                                              perform the classical SQ on many datasets. In addition, as has been
+their inner product and collect the error of the estimation. In the
+left panel of Figure 7, we fix 𝐷 = 1000 and plot the curve of the             15 The LVQ paper [1] compares PQ and SQ and finds that PQ does not have competitive
+99.9% quantile of the empirical errors with respect to 𝐵 (the red             performance with a moderate compression rate.
+                                                                         11
+reported [1], PQ is significantly slower than SQ in distance compu-                           asymptotically optimal in terms of the trade-off between the num-
+tation when the same number of bits are used. On the other hand,                              ber of dimensions and the error bound [42]. For more applications
+with relatively large compression rates (e.g., quantizing the vectors                         and theoretical conclusions, we refer readers to a comprehensive
+with 1 or 2 bits per dimension), SQ can hardly produce reasonable                             introduction [23]. Moreover, several studies further investigate on
+accuracy. This may help explain why PQ and SQ were usually re-                                the trade-off between the number of bits for representing a vector
+garded as two separate lines of studies, i.e., each of them is capable                        and the error bound of inner product/distance estimation [2, 35, 41].
+of a certain scenario only. In contrast, in this study, we develop a                          In particular, they prove that compressing a vector into a short code
+method which excels in both scenarios. With the compression rates                             with 𝑂 (𝜖 −2 log(1/𝛿)) bits suffices to guarantee an error bound of 𝜖.
+from 3x to 32x, our method stably outperforms all the methods                                 As a comparison, trivially applying JL Lemma and quantizing the
+empirically (Section 5.2.1). Moreover, it achieves the asymptotic                             real value of each dimension with SQ requires 𝑂 (log 𝜖1 ) bits per di-
+optimality in theory (Section 3.4). In addition, it is worth noting that                      mension [2]. Furthermore, it is observed in [2], for the first time, that
+PQ and its variants are also used with a compression rate which                               when the required accuracy is high (𝜖 is small, 𝜖 −2 log(1/𝛿) > 𝐷),
+is even larger than 32x. However, in this case, without re-ranking,                           the aforementioned result can be further improved (see Section 3.1).
+they can only produce poor recall [17, 29, 37, 45, 47, 70, 72, 81] (e.g.,                     However, as has been discussed in Section 3.4, the algorithmic proof
+<80%), which deviates from the target of this study, i.e., achieving                          in this study is hardly practically applicable.
+high recall without storing the raw vectors in RAM for re-ranking.
+For better comprehensiveness, we include the discussion on the                                7    CONCLUSION
+way of using our method with a larger compression rate in Section 7
+                                                                                              In conclusion, in this study, we propose a novel quantization algo-
+and leave more detailed study as future work.
+                                                                                              rithm which extends the RaBitQ method. It supports to compress
+ANN Query. ANN query is a key component of high-dimensional                                   high-dimensional vectors with a moderate compression rate such
+vector data management and has been widely supported by real-                                 that it produces promising recall without re-ranking. The method
+world systems [31, 49, 52, 71, 79]. Among the existing algo-                                  has consistent advantages in both empirical accuracy and theoret-
+rithms [12, 15, 24, 29, 37, 43, 44, 76, 78], the partition-based method                       ical guarantees over SQ and its variants. In addition, it supports
+IVF and the graph-based method HNSW have been deployed to the                                 efficient distance comparisons by first estimating a distance based
+widest extent [44, 52, 71, 79]. For more methods, we refer readers                            on the first bits of the quantization codes, which helps prune many
+to recent tutorials [18, 53, 61], surveys [7, 52, 57, 75] and bench-                          candidates from the distance computation based on the full codes.
+marks [6, 16, 43, 74]. Besides the ANN query, there have been grow-                           Extensive experiments verify its effectiveness in practice and the
+ing interests in many advanced queries related to ANN [49, 52, 71].                           alignment between the empirical performance and the theoretical
+For example, in real-world systems, besides vectors, a data object                            analysis.
+usually involves several attributes such as labels, numbers and                                  We would like to discuss on the following applications and ex-
+strings. It is often the case that users target to find the data objects                      tensions. (1) Like the original RaBitQ, the method can be adapted to
+which satisfy some constraints on the attributes and have their vec-                          support the estimation of inner product and cosine similarity (see
+tor nearest to the user’s query vector. These questions are usually                           [27]). (2) When targeting to compress vectors with a compression
+referred to as attribute-filtering ANN query [49, 52, 55, 71, 79, 83].                        rate of >32x (i.e., we use fewer than 1 bit per dimension for quantiz-
+Besides, due to the recent development in information retrieval,                              ing a vector), we could first apply random projection for dimension
+there has also been a trend in multi-vector search [40, 52, 63]. In par-                      reduction and apply the original RaBitQ method for binarization.
+ticular, these studies map a document to multiple high-dimensional                            The details are left in Appendix C due to the page limit. (3) Our
+vectors. During querying, they also map a query document to mul-                              method may bring benefits to other scenarios of ANN search (e.g.,
+tiple vectors and search for the most relevant documents via a new                            we may put the first bits of the quantization codes in RAM, leave
+similarity metric called MaxSim, which is aggregated from the inner                           the remaining bits in SSDs and conduct distance comparisons like
+products between query and data vectors [40, 63]. We note that in                             what we do in Section 4.2). (4) Quantization is also a fundamental
+this paper, we present a method of vector compression and support                             component in machine learning systems. The practicality and opti-
+to estimate inner product and squared Euclidean distances unbi-                               mality of RaBitQ implies its potential of optimizing neural network
+asedly based on the compressed vectors. Our method can be used                                inferencing and training.
+in these tasks for vector compression and distances/inner-product
+estimation seamlessly.                                                                        REFERENCES
+Random Projection. Random projection is a fundamental tech-                                    [1] Cecilia Aguerrebere, Ishwar Singh Bhati, Mark Hildebrand, Mariano Tepper, and
+                                                                                                   Theodore Willke. 2023. Similarity Search in the Blink of an Eye with Compressed
+nique that has wide applications [10, 14, 15, 26, 27, 33, 66, 67]. The                             Indices. Proc. VLDB Endow. 16, 11 (aug 2023), 3433–3446. https://doi.org/10.
+effectiveness of random projection is closely related to the seminal                               14778/3611479.3611537
+Johnson-Lindenstrauss (JL) Lemma [39]. In particular, JL Lemma                                 [2] Noga Alon and Bo’az Klartag. 2017. Optimal Compression of Approximate Inner
+                                                                                                   Products and Dimension Reduction. In 2017 IEEE 58th Annual Symposium on
+states that projecting a vector onto the space of 𝑂 (𝜖 −2 log(1/𝛿))                                Foundations of Computer Science (FOCS). 639–650. https://doi.org/10.1109/FOCS.
+dimensions suffices to provide an error bound of 𝜖 with the proba-                                 2017.65
+                                                                                               [3] Fabien André, Anne-Marie Kermarrec, and Nicolas Le Scouarnec. 2015. Cache
+bility of at least 1 −𝛿 16 . A theoretical study proves that JL Lemma is                           Locality is Not Enough: High-Performance Nearest Neighbor Search with Product
+                                                                                                   Quantization Fast Scan. Proc. VLDB Endow. 9, 4 (dec 2015), 288–299. https:
+                                                                                                   //doi.org/10.14778/2856318.2856324
+16 The error bound includes a multiplicative error bound of Euclidean distances and an
+                                                                                               [4] Fabien André, Anne-Marie Kermarrec, and Nicolas Le Scouarnec. 2017. Accel-
+additive error bound of inner product.                                                             erated Nearest Neighbor Search with Quick ADC. In Proceedings of the 2017
+                                                                                         12
+     ACM on International Conference on Multimedia Retrieval (Bucharest, Romania)                        Search. Proc. ACM Manag. Data 2, 3, Article 167 (may 2024), 27 pages. https:
+     (ICMR ’17). Association for Computing Machinery, New York, NY, USA, 159–166.                        //doi.org/10.1145/3654970
+     https://doi.org/10.1145/3078971.3078992                                                        [28] Yunfan Gao, Yun Xiong, Xinyu Gao, Kangxiang Jia, Jinliu Pan, Yuxi Bi, Yi
+ [5] Fabien André, Anne-Marie Kermarrec, and Nicolas Le Scouarnec. 2021. Quicker                         Dai, Jiawei Sun, Meng Wang, and Haofen Wang. 2024. Retrieval-Augmented
+     ADC : Unlocking the Hidden Potential of Product Quantization With SIMD. IEEE                        Generation for Large Language Models: A Survey. arXiv:2312.10997 [cs.CL]
+     Transactions on Pattern Analysis and Machine Intelligence 43, 5 (2021), 1666–1677.                  https://arxiv.org/abs/2312.10997
+     https://doi.org/10.1109/TPAMI.2019.2952606                                                     [29] Tiezheng Ge, Kaiming He, Qifa Ke, and Jian Sun. 2013. Optimized product
+ [6] Martin Aumüller, Erik Bernhardsson, and Alexander Faithfull. 2020. ANN-                             quantization for approximate nearest neighbor search. In Proceedings of the IEEE
+     Benchmarks: A Benchmarking Tool for Approximate Nearest Neighbor Algo-                              Conference on Computer Vision and Pattern Recognition. 2946–2953.
+     rithms. Inf. Syst. 87, C (jan 2020), 13 pages. https://doi.org/10.1016/j.is.2019.02.006        [30] Yunchao Gong, Svetlana Lazebnik, Albert Gordo, and Florent Perronnin. 2013.
+ [7] Martin Aumüller and Matteo Ceccarello. 2023. Recent Approaches and Trends in                        Iterative Quantization: A Procrustean Approach to Learning Binary Codes for
+     Approximate Nearest Neighbor Search, with Remarks on Benchmarking. Data                             Large-Scale Image Retrieval. IEEE Transactions on Pattern Analysis and Machine
+     Engineering (2023), 89.                                                                             Intelligence 35, 12 (2013), 2916–2929. https://doi.org/10.1109/TPAMI.2012.193
+ [8] Artem Babenko and Victor Lempitsky. 2014. Additive Quantization for Extreme                    [31] Rentong Guo, Xiaofan Luan, Long Xiang, Xiao Yan, Xiaomeng Yi, Jigao Luo,
+     Vector Compression. In 2014 IEEE Conference on Computer Vision and Pattern                          Qianya Cheng, Weizhi Xu, Jiarui Luo, Frank Liu, Zhenshan Cao, Yanliang Qiao,
+     Recognition. 931–938. https://doi.org/10.1109/CVPR.2014.124                                         Ting Wang, Bo Tang, and Charles Xie. 2022. Manu: A Cloud Native Vector
+ [9] Object Box. 2024. Object Box. https://objectbox.io/vector-database-for-ondevice-                    Database Management System. Proc. VLDB Endow. 15, 12 (aug 2022), 3548–3561.
+     ai/.                                                                                                https://doi.org/10.14778/3554821.3554843
+[10] Moses S. Charikar. 2002. Similarity Estimation Techniques from Rounding Algo-                  [32] Ruiqi Guo, Philip Sun, Erik Lindgren, Quan Geng, David Simcha, Felix Chern, and
+     rithms. In Proceedings of the Thiry-Fourth Annual ACM Symposium on Theory of                        Sanjiv Kumar. 2020. Accelerating Large-Scale Inference with Anisotropic Vector
+     Computing (Montreal, Quebec, Canada) (STOC ’02). Association for Computing                          Quantization. In Proceedings of the 37th International Conference on Machine
+     Machinery, New York, NY, USA, 380–388. https://doi.org/10.1145/509907.509965                        Learning (ICML’20). JMLR.org, Article 364, 10 pages.
+[11] Qi Chen, Bing Zhao, Haidong Wang, Mingqin Li, Chuanjie Liu, Zengzhong Li,                      [33] Qiang Huang, Jianlin Feng, Yikai Zhang, Qiong Fang, and Wilfred Ng. 2015.
+     Mao Yang, and Jingdong Wang. 2021. SPANN: Highly-efficient Billion-scale                            Query-aware locality-sensitive hashing for approximate nearest neighbor search.
+     Approximate Nearest Neighbor Search. In 35th Conference on Neural Information                       Proceedings of the VLDB Endowment 9, 1 (2015), 1–12.
+     Processing Systems (NeurIPS 2021).                                                             [34] Piotr Indyk and Rajeev Motwani. 1998. Approximate nearest neighbors: towards
+[12] Paolo Ciaccia, Marco Patella, and Pavel Zezula. 1997. M-Tree: An Efficient                          removing the curse of dimensionality. In Proceedings of the thirtieth annual ACM
+     Access Method for Similarity Search in Metric Spaces. In Proceedings of the 23rd                    symposium on Theory of computing. 604–613.
+     International Conference on Very Large Data Bases (VLDB ’97). Morgan Kaufmann                  [35] Piotr Indyk and Tal Wagner. 2022. Optimal (Euclidean) Metric Compression.
+     Publishers Inc., San Francisco, CA, USA, 426–435.                                                   SIAM J. Comput. 51, 3 (2022), 467–491. https://doi.org/10.1137/20M1371324
+[13] Couchbase. 2024. Vector Search at the Edge with Couchbase Mobile. https://                          arXiv:https://doi.org/10.1137/20M1371324
+     www.couchbase.com/blog/vector-search-at-the-edge-with-couchbase-mobile/.                       [36] Suhas Jayaram Subramanya, Fnu Devvrit, Harsha Vardhan Simhadri, Ravishankar
+[14] Sanjoy Dasgupta and Yoav Freund. 2008. Random projection trees and low                              Krishnawamy, and Rohan Kadekodi. 2019. DiskANN: Fast Accurate Billion-point
+     dimensional manifolds. In Proceedings of the fortieth annual ACM symposium on                       Nearest Neighbor Search on a Single Node. In Advances in Neural Information
+     Theory of computing. 537–546.                                                                       Processing Systems, H. Wallach, H. Larochelle, A. Beygelzimer, F. d'Alché-Buc,
+[15] Mayur Datar, Nicole Immorlica, Piotr Indyk, and Vahab S Mirrokni. 2004. Locality-                   E. Fox, and R. Garnett (Eds.), Vol. 32. Curran Associates, Inc. https://proceedings.
+     sensitive hashing scheme based on p-stable distributions. In Proceedings of the                     neurips.cc/paper/2019/file/09853c7fb1d3f8ee67a61b6bf4a7f8e6-Paper.pdf
+     twentieth annual symposium on Computational geometry. 253–262.                                 [37] Herve Jegou, Matthijs Douze, and Cordelia Schmid. 2010. Product quantization
+[16] Magdalen Dobson, Zheqi Shen, Guy E Blelloch, Laxman Dhulipala, Yan Gu,                              for nearest neighbor search. IEEE transactions on pattern analysis and machine
+     Harsha Vardhan Simhadri, and Yihan Sun. 2023. Scaling Graph-Based ANNS                              intelligence 33, 1 (2010), 117–128.
+     Algorithms to Billion-Size Datasets: A Comparative Analysis. arXiv preprint                    [38] Wenqi Jiang, Shigang Li, Yu Zhu, Johannes De Fine Licht, Zhenhao He, Runbin
+     arXiv:2305.04359 (2023).                                                                            Shi, Cedric Renggli, Shuai Zhang, Theodoros Rekatsinas, Torsten Hoefler, and
+[17] Matthijs Douze, Alexandr Guzhva, Chengqi Deng, Jeff Johnson, Gergely Szilvasy,                      Gustavo Alonso. 2023. Co-design Hardware and Algorithm for Vector Search.
+     Pierre-Emmanuel Mazaré, Maria Lomeli, Lucas Hosseini, and Hervé Jégou. 2024.                        In Proceedings of the International Conference for High Performance Computing,
+     The Faiss library. arXiv:2401.08281 [cs.LG] https://arxiv.org/abs/2401.08281                        Networking, Storage and Analysis (Denver, CO, USA) (SC ’23). Association for
+[18] Karima Echihabi, Kostas Zoumpatianos, and Themis Palpanas. 2021. New Trends                         Computing Machinery, New York, NY, USA, Article 87, 15 pages. https://doi.
+     in High-D Vector Similarity Search: Al-Driven, Progressive, and Distributed. Proc.                  org/10.1145/3581784.3607045
+     VLDB Endow. 14, 12 (jul 2021), 3198–3201. https://doi.org/10.14778/3476311.                    [39] William B Johnson and Joram Lindenstrauss. 1984. Extensions of Lipschitz
+     3476407                                                                                             mappings into a Hilbert space 26. Contemporary mathematics 26 (1984), 28.
+[19] Karima Echihabi, Kostas Zoumpatianos, Themis Palpanas, and Houda Benbrahim.                    [40] Omar Khattab and Matei Zaharia. 2020. Colbert: Efficient and effective passage
+     2018. The Lernaean Hydra of Data Series Similarity Search: An Experimental                          search via contextualized late interaction over bert. In Proceedings of the 43rd
+     Evaluation of the State of the Art. Proc. VLDB Endow. 12, 2 (oct 2018), 112–127.                    International ACM SIGIR conference on research and development in Information
+     https://doi.org/10.14778/3282495.3282498                                                            Retrieval. 39–48.
+[20] Elastic. 2024. Elastic. https://www.elastic.co/enterprise-search/vector-search.                [41] Eyal Kushilevitz, Rafail Ostrovsky, and Yuval Rabani. 1998. Efficient search for
+[21] Faiss. 2023. Faiss. https://github.com/facebookresearch/faiss.                                      approximate nearest neighbor in high dimensional spaces. In Proceedings of the
+[22] Hakan Ferhatosmanoglu, Ertem Tuncel, Divyakant Agrawal, and Amr El Abbadi.                          Thirtieth Annual ACM Symposium on Theory of Computing (Dallas, Texas, USA)
+     2000. Vector Approximation Based Indexing for Non-Uniform High Dimensional                          (STOC ’98). Association for Computing Machinery, New York, NY, USA, 614–623.
+     Data Sets. In Proceedings of the Ninth International Conference on Information                      https://doi.org/10.1145/276698.276877
+     and Knowledge Management (McLean, Virginia, USA) (CIKM ’00). Association for                   [42] Kasper Green Larsen and Jelani Nelson. 2017. Optimality of the Johnson-
+     Computing Machinery, New York, NY, USA, 202–209. https://doi.org/10.1145/                           Lindenstrauss lemma. In 2017 IEEE 58th Annual Symposium on Foundations of
+     354756.354820                                                                                       Computer Science (FOCS). IEEE, 633–638.
+[23] Casper Benjamin Freksen. 2021. An Introduction to Johnson-Lindenstrauss                        [43] Wen Li, Ying Zhang, Yifang Sun, Wei Wang, Mingjie Li, Wenjie Zhang, and
+     Transforms. CoRR abs/2103.00564 (2021). arXiv:2103.00564 https://arxiv.org/abs/                     Xuemin Lin. 2019. Approximate nearest neighbor search on high dimensional
+     2103.00564                                                                                          data—experiments, analyses, and improvement. IEEE Transactions on Knowledge
+[24] Cong Fu, Chao Xiang, Changxu Wang, and Deng Cai. 2019. Fast Approximate                             and Data Engineering 32, 8 (2019), 1475–1488.
+     Nearest Neighbor Search with the Navigating Spreading-out Graph. Proc. VLDB                    [44] Yu A. Malkov and D. A. Yashunin. 2020. Efficient and Robust Approximate
+     Endow. 12, 5 (jan 2019), 461–474. https://doi.org/10.14778/3303753.3303754                          Nearest Neighbor Search Using Hierarchical Navigable Small World Graphs.
+[25] Junhao Gan, Jianlin Feng, Qiong Fang, and Wilfred Ng. 2012. Locality-Sensitive                      IEEE Transactions on Pattern Analysis and Machine Intelligence 42, 4 (2020), 824–
+     Hashing Scheme Based on Dynamic Collision Counting. In Proceedings of the                           836. https://doi.org/10.1109/TPAMI.2018.2889473
+     2012 ACM SIGMOD International Conference on Management of Data (Scottsdale,                    [45] Julieta Martinez, Joris Clement, Holger H. Hoos, and James J. Little. 2016. Re-
+     Arizona, USA) (SIGMOD ’12). Association for Computing Machinery, New York,                          visiting Additive Quantization. In Computer Vision – ECCV 2016, Bastian Leibe,
+     NY, USA, 541–552. https://doi.org/10.1145/2213836.2213898                                           Jiri Matas, Nicu Sebe, and Max Welling (Eds.). Springer International Publishing,
+[26] Jianyang Gao and Cheng Long. 2023. High-Dimensional Approximate Nearest                             Cham, 137–153.
+     Neighbor Search: With Reliable and Efficient Distance Comparison Operations.                   [46] Julieta Martinez, Shobhit Zakhmi, Holger H. Hoos, and James J. Little. 2018.
+     Proc. ACM Manag. Data 1, 2, Article 137 (jun 2023), 27 pages. https://doi.org/10.                   LSQ++: Lower Running Time and Higher Recall in Multi-Codebook Quantization.
+     1145/3589282                                                                                        In Computer Vision – ECCV 2018: 15th European Conference, Munich, Germany,
+[27] Jianyang Gao and Cheng Long. 2024. RaBitQ: Quantizing High-Dimensional                              September 8-14, 2018, Proceedings, Part XVI (Munich, Germany). Springer-Verlag,
+     Vectors with a Theoretical Error Bound for Approximate Nearest Neighbor                             Berlin, Heidelberg, 508–523. https://doi.org/10.1007/978-3-030-01270-0_30
+                                                                                               13
+[47] Yusuke Matsui, Yusuke Uchida, Hervé Jégou, and Shin’ichi Satoh. 2018. A Survey                ’21). Association for Computing Machinery, New York, NY, USA, 2614–2627.
+     of Product Quantization. ITE Transactions on Media Technology and Applications                https://doi.org/10.1145/3448016.3457550
+     6, 1 (2018), 2–10.                                                                       [72] Jingdong Wang, Ting Zhang, jingkuan song, Nicu Sebe, and Heng Tao Shen. 2018.
+[48] Milvus. 2024. Run Milvus Lite Locally. https://milvus.io/docs/install-overview.               A Survey on Learning to Hash. IEEE Transactions on Pattern Analysis and Machine
+     md.                                                                                           Intelligence 40, 4 (2018), 769–790. https://doi.org/10.1109/TPAMI.2017.2699960
+[49] Jason Mohoney, Anil Pacaci, Shihabur Rahman Chowdhury, Ali Mousavi, Ihab F.              [73] Mengzhao Wang, Weizhi Xu, Xiaomeng Yi, Songlin Wu, Zhangyang Peng, Xi-
+     Ilyas, Umar Farooq Minhas, Jeffrey Pound, and Theodoros Rekatsinas. 2023. High-               angyu Ke, Yunjun Gao, Xiaoliang Xu, Rentong Guo, and Charles Xie. 2024.
+     Throughput Vector Similarity Search in Knowledge Graphs. Proc. ACM Manag.                     Starling: An I/O-Efficient Disk-Resident Graph Index Framework for High-
+     Data 1, 2, Article 197 (jun 2023), 25 pages. https://doi.org/10.1145/3589777                  Dimensional Vector Similarity Search on Data Segment. Proc. ACM Manag.
+[50] Marius Muja and David G Lowe. 2014. Scalable nearest neighbor algorithms                      Data 2, 1, Article 14 (mar 2024), 27 pages. https://doi.org/10.1145/3639269
+     for high dimensional data. IEEE transactions on pattern analysis and machine             [74] Mengzhao Wang, Xiaoliang Xu, Qiang Yue, and Yuxiang Wang. 2021. A Compre-
+     intelligence 36, 11 (2014), 2227–2240.                                                        hensive Survey and Experimental Comparison of Graph-Based Approximate
+[51] OpenAI. 2024. New embedding models and API updates. https://openai.com/                       Nearest Neighbor Search. Proc. VLDB Endow. 14, 11 (jul 2021), 1964–1978.
+     index/new-embedding-models-and-api-updates/.                                                  https://doi.org/10.14778/3476249.3476255
+[52] James Pan, Jianguo Wang, and Guoliang Li. 2024. Survey of vector database                [75] Zeyu Wang, Peng Wang, Themis Palpanas, and Wei Wang. 2023. Graph-and
+     management systems. The VLDB Journal (07 2024), 1–25. https://doi.org/10.                     Tree-based Indexes for High-dimensional Vector Similarity Search: Analyses,
+     1007/s00778-024-00864-x                                                                       Comparisons, and Future Directions. Data Engineering (2023), 3–21.
+[53] James Jie Pan, Jianguo Wang, and Guoliang Li. 2024. Vector Database Man-                 [76] Zeyu Wang, Haoran Xiong, Zhenying He, Peng Wang, and Wei wang. 2024. Dis-
+     agement Techniques and Systems. In Companion of the 2024 International Con-                   tance Comparison Operators for Approximate Nearest Neighbor Search: Explo-
+     ference on Management of Data (Santiago AA, Chile) (SIGMOD/PODS ’24). As-                     ration and Benchmark. arXiv:2403.13491 [cs.DB] https://arxiv.org/abs/2403.13491
+     sociation for Computing Machinery, New York, NY, USA, 597–604. https:                    [77] Roger Weber, Hans-Jörg Schek, and Stephen Blott. 1998. A Quantitative Analysis
+     //doi.org/10.1145/3626246.3654691                                                             and Performance Study for Similarity-Search Methods in High-Dimensional
+[54] John Paparrizos, Ikraduya Edian, Chunwei Liu, Aaron J. Elmore, and Michael J.                 Spaces. In Proceedings of the 24rd International Conference on Very Large Data
+     Franklin. 2022. Fast Adaptive Similarity Search through Variance-Aware Quan-                  Bases (VLDB ’98). Morgan Kaufmann Publishers Inc., San Francisco, CA, USA,
+     tization. In 2022 IEEE 38th International Conference on Data Engineering (ICDE).              194–205.
+     2969–2983. https://doi.org/10.1109/ICDE53745.2022.00268                                  [78] Mingyu Yang, Wentao Li, Jiabao Jin, Xiaoyao Zhong, Xiangyu Wang, Zhitao
+[55] Liana Patel, Peter Kraft, Carlos Guestrin, and Matei Zaharia. 2024. ACORN:                    Shen, Wei Jia, and Wei Wang. 2024. Effective and General Distance Computation
+     Performant and Predicate-Agnostic Search Over Vector Embeddings and Struc-                    for Approximate Nearest Neighbor Search. arXiv:2404.16322 [cs.DB] https:
+     tured Data. Proc. ACM Manag. Data 2, 3, Article 120 (may 2024), 27 pages.                     //arxiv.org/abs/2404.16322
+     https://doi.org/10.1145/3654923                                                          [79] Wen Yang, Tao Li, Gai Fang, and Hong Wei. 2020. PASE: PostgreSQL Ultra-High-
+[56] Marco Patella and Paolo Ciaccia. 2008. The Many Facets of Approximate Similar-                Dimensional Approximate Nearest Neighbor Search Extension. In Proceedings of
+     ity Search. In First International Workshop on Similarity Search and Applications             the 2020 ACM SIGMOD International Conference on Management of Data (Portland,
+     (sisap 2008). 10–21. https://doi.org/10.1109/SISAP.2008.18                                    OR, USA) (SIGMOD ’20). Association for Computing Machinery, New York, NY,
+[57] Marco Patella and Paolo Ciaccia. 2009. Approximate Similarity Search: A Multi-                USA, 2241–2253. https://doi.org/10.1145/3318464.3386131
+     Faceted Problem. J. of Discrete Algorithms 7, 1 (mar 2009), 36–48. https://doi.          [80] Pavel Zezula, Giuseppe Amato, Vlastislav Dohnal, and Michal Batko. 2010. Simi-
+     org/10.1016/j.jda.2008.09.014                                                                 larity Search: The Metric Space Approach (1st ed.). Springer Publishing Company,
+[58] pgvector. 2024. pgvector. https://github.com/pgvector/pgvector.                               Incorporated.
+[59] pgvector.rs. 2024. pgvector.rs. https://pgvecto.rs/.                                     [81] Ting Zhang, Chao Du, and Jingdong Wang. 2014. Composite Quantization
+[60] Qdrant. 2024. Qdrant. https://qdrant.tech/.                                                   for Approximate Nearest Neighbor Search. In Proceedings of the 31st Interna-
+[61] Jianbin Qin, Wei Wang, Chuan Xiao, Ying Zhang, and Yaoshu Wang. 2021. High-                   tional Conference on Machine Learning (Proceedings of Machine Learning Research,
+     Dimensional Similarity Query Processing for Data Science. In Proceedings of the               Vol. 32), Eric P. Xing and Tony Jebara (Eds.). PMLR, Bejing, China, 838–846.
+     27th ACM SIGKDD Conference on Knowledge Discovery and Data Mining (Virtual                    https://proceedings.mlr.press/v32/zhangd14.html
+     Event, Singapore) (KDD ’21). Association for Computing Machinery, New York,              [82] Zilliz. 2023. Pyglass - Graph Library for Approximate Similarity Search. https:
+     NY, USA, 4062–4063. https://doi.org/10.1145/3447548.3470811                                   //github.com/zilliztech/pyglass. Accessed: 17 Apr, 2024.
+[62] Hanan Samet. 2005. Foundations of Multidimensional and Metric Data Structures            [83] Chaoji Zuo, Miao Qiao, Wenchao Zhou, Feifei Li, and Dong Deng. 2024. SeRF:
+     (The Morgan Kaufmann Series in Computer Graphics and Geometric Modeling).                     Segment Graph for Range-Filtering Approximate Nearest Neighbor Search. Proc.
+     Morgan Kaufmann Publishers Inc., San Francisco, CA, USA.                                      ACM Manag. Data 2, 1, Article 69 (mar 2024), 26 pages. https://doi.org/10.1145/
+[63] Keshav Santhanam, Omar Khattab, Jon Saad-Falcon, Christopher Potts, and Matei                 3639324
+     Zaharia. 2021. Colbertv2: Effective and efficient retrieval via lightweight late
+     interaction. arXiv preprint arXiv:2112.01488 (2021).
+[64] SingleStore. 2024. SingleStore. https://www.singlestore.com/built-in-vector-
+     database/.
+[65] Yongye Su, Yinqi Sun, Minjia Zhang, and Jianguo Wang. 2024. Vexless: A Server-
+     less Vector Data Management System Using Cloud Functions. Proc. ACM Manag.
+     Data 2, 3, Article 187 (may 2024), 26 pages. https://doi.org/10.1145/3654990
+[66] Yifang Sun, Wei Wang, Jianbin Qin, Ying Zhang, and Xuemin Lin. 2014. SRS:
+     solving c-approximate nearest neighbor queries in high dimensional euclidean
+     space with a tiny index. Proceedings of the VLDB Endowment (2014).
+[67] Yufei Tao, Ke Yi, Cheng Sheng, and Panos Kalnis. 2010. Efficient and accu-
+     rate nearest neighbor and closest pair search in high-dimensional space. ACM
+     Transactions on Database Systems (TODS) 35, 3 (2010), 1–46.
+[68] Ertem Tuncel, Hakan Ferhatosmanoglu, and Kenneth Rose. 2002. VQ-Index: An
+     Index Structure for Similarity Searching in Multimedia Databases. In Proceedings
+     of the Tenth ACM International Conference on Multimedia (Juan-les-Pins, France)
+     (MULTIMEDIA ’02). Association for Computing Machinery, New York, NY, USA,
+     543–552. https://doi.org/10.1145/641007.641117
+[69] Roman Vershynin. 2018. High-Dimensional Probability: An Introduction with
+     Applications in Data Science. Cambridge University Press. https://doi.org/10.
+     1017/9781108231596
+[70] Jun Wang, Wei Liu, Sanjiv Kumar, and Shih-Fu Chang. 2016. Learning to Hash
+     for Indexing Big Data - A Survey. Proc. IEEE 104, 1 (2016), 34–57. https://doi.
+     org/10.1109/JPROC.2015.2487976
+[71] Jianguo Wang, Xiaomeng Yi, Rentong Guo, Hai Jin, Peng Xu, Shengjun Li, Xi-
+     angyu Wang, Xiangzhou Guo, Chengming Li, Xiaohai Xu, Kun Yu, Yuxing
+     Yuan, Yinghao Zou, Jiquan Long, Yudong Cai, Zhenxiang Li, Zhifeng Zhang,
+     Yihua Mo, Jun Gu, Ruiyi Jiang, Yi Wei, and Charles Xie. 2021. Milvus: A
+     Purpose-Built Vector Data Management System. In Proceedings of the 2021 In-
+     ternational Conference on Management of Data (Virtual Event, China) (SIGMOD
+                                                                                         14
+APPENDIX                                                                                        Proof. We first prove that ∀𝑡 > 0, y ∈ G, ∥o′ −𝑡y∥ 2 ≥ 1− ⟨o, ō⟩ 2
+                                                                                             as follows.
+A THE PROOF OF LEMMA 3.1
+    Proof. Note that                                                                           ∥o′ − 𝑡y∥ 2 = ∥o′ ∥ 2 − 2𝑡 o′, y + 𝑡 2 ∥y∥ 2                          (26)
+                                                                                                                           2       2          ′      2     2
+                                                                                                            = 1 − ⟨o, ō⟩ + ⟨o, ō⟩ − 2𝑡 o , y + 𝑡 ∥y∥               (27)
+                        ∥y − 𝑡o′ ∥ 2 = ∥y∥ 2 + 𝑡 2 − 2𝑡 o′, y                    (15)
+                                                                                                                                    ȳ 2
+                                                                                                                                       
+                        ∥ ȳ − 𝑡o′ ∥ 2 = ∥ ȳ∥ 2 + 𝑡 2 − 2𝑡 o′, ȳ               (16)                       = 1 − ⟨o, ō⟩ 2 + o′,           − 2𝑡 o′, y + 𝑡 2 ∥y∥ 2   (28)
+                                                                                                                                  ∥ ȳ∥
+                                                                                                                                    y 2
+                                                                                                                                       
+Then to prove that ∃𝑡 > 0 such that ∥y−𝑡o′ ∥ 2 ≥ ∥ ȳ−𝑡o′ ∥ 2, ∀y ∈ G,
+                                                                                                            ≥ 1 − ⟨o, ō⟩ 2 + o′,           − 2𝑡 o′, y + 𝑡 2 ∥y∥ 2   (29)
+it suffices to prove that                                                                                                          ∥y∥
+                                                                                                                                                 2
+                                                                                                                                      y
+                    ∥y∥ 2 − ∥ ȳ∥ 2 − 2𝑡 o′, y + 2𝑡 o′, ȳ ≥ 0                   (17)                       = 1 − ⟨o, ō⟩ 2 + o′,           − 𝑡 ∥y∥                  (30)
+                                                                                                                                    ∥y∥
+          ∥ ȳ∥ 2                                                                                           ≥ 1 − ⟨o, ō⟩ 2                                          (31)
+Let 𝑡 = ⟨o′ ,ȳ⟩ . We derive from the left hand side as follows.
+                                                                                             where (27) is because o′ is a unit vector. (28) applies 𝑃 −1
+                          2        2                   ′            ′                        to both sides of the third term in (27). (29) is because ȳ =
+                     ∥y∥ − ∥ ȳ∥ − 2𝑡 o , y + 2𝑡 o , ȳ                          (18)
+                                                                                             arg maxy∈ G ⟨y/∥y∥, o′ ⟩ and G is symmetric, i.e., ∀y ∈ G, we have
+                                                  ∥ ȳ∥ 2
+                    =∥y∥ 2 − ∥ ȳ∥ 2 − 2                    · o′, y + 2∥ ȳ∥ 2
+                                                                                                                                                   D          E
+                                                                                                                                                           ȳ
+                                                 ⟨o′, ȳ⟩
+                                                                                 (19)        −y ∈ G. Then we note that when y = ȳ and 𝑡 = ∥ ȳ∥1    o′, ∥ ȳ∥ , the
+                                          ∥ ȳ∥ 2                                            equality holds. Taking the square root of both sides finishes the
+                    =∥y∥ 2 + ∥ ȳ∥ 2 − 2             · o′ , y                    (20)        proof.                                                                □
+                                         ⟨o′, ȳ⟩
+                                                                  
+                                          ∥ ȳ∥∥y∥              y
+                    =∥y∥ 2 + ∥ ȳ∥ 2 − 2 D            E · o′ ,                   (21)           Lemma B.3. For any 𝐿 > 0, we have
+                                                  ȳ
+                                           o′, ∥ ȳ∥           ∥y∥                                    √︃
+                                                                                                                          𝐿   𝑐1      𝑐   
+                                                                                                                                         0
+                                                                                                    P     1 − ⟨o, ō⟩ 2 > 𝐵 + √ · exp − 𝐿 2 < 𝛿                      (32)
+                ≥∥y∥ 2 + ∥ ȳ∥ 2 − 2∥ ȳ∥∥y∥                                     (22)                                    2     𝛿        2
+                    = (∥ ȳ∥ − ∥y∥) 2 ≥ 0                                        (23)        where 𝑐 0 and 𝑐 1 are absolute constants.
+                                                                                                                                       
+                                       ∥ ȳ∥ 2
+where (19) plugs in 𝑡 = ⟨o′ ,ȳ⟩ . (20) and (21) rewrite the form of                            Proof. Let 𝑓 (𝑥) = sgn(𝑥) · min |𝑥 |, √𝐿 where sgn(𝑥) = −1
+                                                                                                                                              𝐷
+                                                                                             if 𝑥 < 0 and sgn(𝑥) = +1 if 𝑥 ≥ 0. We let 𝑓 (o′ ) denote the vector
+                                                  D       E
+                                                    y
+(19). (22) applies the fact that ȳ = arg maxy∈ G ∥y∥ , o′ , i.e., ∀y ∈
+   D
+       ȳ
+             E D
+                    y
+                          E     D
+                                    ȳ
+                                          E                                                  whose  𝑖th coordinate is 𝑓 (o′ [𝑖]). Next we start the derivation from
+G, ∥ ȳ∥ , o′ ≥ ∥y∥ , o′ and ∥ ȳ∥ , o′ > 0. (23) finishes the proof.
+                                                                                             √︃
+                                                                                               1 − ⟨o, ō⟩ 2 as follows.
+                                                                      □
+                                                                                                      √︃
+B     THE PROOF OF THEOREM 3.2                                                                          1 − ⟨o, ō⟩ 2 =    min ∥o′ − 𝑡y∥                             (33)
+                                                                                                                        𝑡 >0,y∈ G
+To make the paper self-contained, we restate the tail bound of the                                                    ≤ min o′ − 𝑡 0 y                               (34)
+coordinates of the random vector which follows uniform distribu-                                                        y∈ G
+tion on the unit sphere S𝐷 −1 in the 𝐷-dimensional space.                                                             = min o′ − 𝑓 (o′ ) + 𝑓 (o′ ) − 𝑡 0 y           (35)
+                                                                                                                        y∈ G
+   Lemma B.1. ([69]) For a random vector x = (x[1], x[2], ..., x[𝐷])                                                  ≤ min o′ − 𝑓 (o′ ) + 𝑓 (o′ ) − 𝑡 0 y           (36)
+which follows the uniform distribution on the unit sphere S𝐷 −1 in                                                      y∈ G
+the 𝐷-dimensional space, the tail bound of its coordinates is given as                                                = o′ − 𝑓 (o′ ) + min 𝑓 (o′ ) − 𝑡 0 y           (37)
+                                                                                                                                       y∈ G
+                                                                    
+                                    𝑡                                                        Here 𝑡 0 := 𝐵−1𝐿√ . (33) applies Lemma B.2. (34) relaxes the min-
+                        P |x[𝑖]| > √                   ≤ 2 exp −𝑐 0𝑡 2           (24)                     2    𝐷
+                                     𝐷                                                       imum over 𝑡 > 0 to a specific 𝑡 0 . (35) and (36) apply triangle’s
+where 𝑐 0 is a constant, 𝑖 = 1, 2, ..., 𝐷.                                                   inequality. (37) holds because ∥o′ − 𝑓 (o′ )∥ is independent of y. We
+                                                                                             next analyze these two terms in (37) separately. Let us first analyze
+  We next prove Theorem 3.2 by first proving Lemma B.2 and                                   the expected value of ∥o′ − 𝑓 (o′ ) ∥ 2 as follows.
+Lemma B.3.                                                                                       h               i
+                                                                                                                      "𝐷                          #
+                                                                                                                       ∑︁
+                                                                                               E o′ − 𝑓 (o′ )             |o′ [𝑖] − 𝑓 (o′ [𝑖])| 2
+                                                                                                               2
+                                                                                                                   =E                                          (38)
+   Lemma B.2. Let o be a unit vector and ō be its quantized vector in                                                     𝑖=1
+G𝑟 , o′ = 𝑃 −1 o. Then
+                                                                                                                   =𝐷 · E |o′ [1] − 𝑓 (o′ [1])| 2
+                                                                                                                                                 
+                                                                                                                                                               (39)
+                         √︃                                                                                             ∫ +∞
+                           1 − ⟨o, ō⟩ 2 =             min ∥o′ − 𝑡y∥                                                          P |o′ [1] − 𝑓 (o′ [1])| 2 > 𝑡 d𝑡 (40)
+                                                                                                                                
+                                                                                 (25)                              =𝐷 ·
+                                                  𝑡 >0,y∈ G                                                                    0
+                                                                                        15
+                     ∫ +∞ 
+                                             √
+                                                         
+                                                     𝐿
+                 =𝐷 ·           P |o′ [1]| > 𝑡 + √         d𝑡            (41)          Proof. For simplifying the notations, let us define the following
+                       0                              𝐷                              events.
+                     ∫ +∞                  √                                                                          √︄                 √︄
+                <𝐷 ·            2 exp −𝑐 0 ( 𝐷𝑡 + 𝐿) 2 d𝑡                (42)                     ⟨ō, q⟩                  1 − ⟨ō, o⟩ 2       log(1/𝛿)
+                                                                                             𝐸𝐴 :           − ⟨o, q⟩ ≤                   ·                (53)
+                       0
+                                ∫ +∞                                                              ⟨ō, o⟩                    ⟨ō, o⟩ 2        𝑐 0 (𝐷 − 1)
+                       −𝑐 0 𝐿 2
+                ≤𝐷 · 𝑒                 2 exp (−𝑐 0 𝐷𝑡) d𝑡
+                                                                                                 √︄
+                                                                         (43)
+                                                                                                    1 − ⟨ō, o⟩ 2     𝐿     𝑐1           𝑐
+                                                                                                                                            0
+                                                                                                                                                   
+                                        0                                                    𝐸𝐵 :              2
+                                                                                                                   ≤ 𝐵 + √ · exp − 𝐿 2                    (54)
+                                        2   2                                                          ⟨ō, o⟩       2                      2
+                 =𝐷 · 𝑒 −𝑐 0 𝐿                · 𝑒 −𝑐 0 𝐿
+                                   2                     2                                                                    𝛿
+                                          =                              (44)
+                                       𝑐0𝐷 𝑐0                                        In particular, to provide an upper bound for the error of the estima-
+                                                                                     tor, we target to prove that
+(39) is because the linearity of expectation and the fact that o′ [𝑖]’s
+are identically distributed to each other. (40) is an elementary                                            P {𝐸𝐴 and 𝐸𝐵 } ≥ 1 − 2𝛿                      (55)
+property of non-negative random variables. (41) can be verified                      Based on the union bound, it suffices to prove that
+by the definition
+         √           of 𝑓 (𝑥). (42) applies Lemma B.1. (43) holds be-                                    P {¬𝐸𝐴 } ≤ 𝛿 and P {¬𝐸𝐵 } ≤ 𝛿                   (56)
+cause ( 𝐷𝑡 + 𝐿) 2 > 𝐷𝑡 + 𝐿 2 . (44) is by elementary calculus. Next
+by applying Markov’s inequality [69], we derive the tail bound of                    Note that P {¬𝐸𝐴 } ≤ 𝛿 holds due to Lemma 2.1 and P {¬𝐸𝐵 } ≤ 𝛿
+∥o′ − 𝑓 (o′ )∥ 2 as follows.                                                         holds
+                                                                                        √︃ because of Lemma B.3 (Lemma B.3 provides an upper bound
+                                                                                    for 1 − ⟨o, ō⟩ 2 and implies that ⟨o, ō⟩ is lower bounded by 1/2).
+                                                             
+                                                                                     Thus, with the probability of at least 1 − 2𝛿, we have
+                                         2            
+                 P o′ − 𝑓 (o′ ) ≥
+                                   2
+                                              · exp −𝑐 0 𝐿 2             (45)
+                                       𝑐 0𝛿                                                                                         
+                                                                                                                                          √︄
+                                                                                        ⟨ō, q⟩               𝐿   𝑐1        𝑐
+                                                                                                                                 0 2          log(1/𝛿)
+                 𝑐 0𝛿                 h                  i                                    − ⟨o, q⟩ ≤ 𝐵 + √ · exp − 𝐿              ·                (57)
+                      · exp 𝑐 0 𝐿 2 · E o′ − 𝑓 (o′ )
+                                                         2
+               ≤                                                         (46)           ⟨ō, o⟩              2     𝛿            2            𝑐 0 (𝐷 − 1)
+                   2
+                 𝑐 0𝛿              2                                               To bound the right hand side by 𝜖, it suffices to let
+                                          · 𝑒 −𝑐 0 𝐿 = 𝛿
+                                                    2
+               <      · exp 𝑐 0 𝐿 2 ·                                    (47)                                                           
+                   2                  𝑐0                                                                          1 (1/𝛿) · log(1/𝛿)
+                                                                                                       𝐿 =Θ log      ·                                   (58)
+                                                                                                                  𝐷           𝜖2
+Then we analyze the upper bound of the second term in (37). Note                                                                        
+                                                                                                                  1 log(1/𝛿)
+that based on the definition of 𝑓 (𝑥), every coordinate of 𝑓 (o′ ) is                                  𝐵 =Θ log      ·             + log 𝐿               (59)
+within the range of [− √𝐿 , + √𝐿 ]. Let us choose y from the set of                                               𝐷      𝜖2
+                               𝐷              𝐷                                                                                
+                                                                                                                  1 log(1/𝛿)
+grids G such that every coordinate 𝑡 0 y[𝑖] is closest to 𝑓 (o′ [𝑖]).                                    =Θ log      ·                                   (60)
+                         1 and y[𝑖] ranges from (−2𝐵−1 + 1 ) to
+Recall that 𝑡 0 = √𝐿 · 2𝐵−1                                                                                       𝐷      𝜖2
+                                                              2
+                        𝐷                                                                                                                                  □
+(+2𝐵−1 − 12 ). Then for every dimension 𝑖, we have |𝑓 (o′ [𝑖]) −
+𝑡 0 y[𝑖] | ≤ 21𝐵 √𝐿 . Thus, we have                                                  C    USING RABITQ WITH >32X COMPRESSION
+                𝐷
+                                                                                          RATE
+                                                  𝐿
+                            min 𝑓 (o′ ) − 𝑡 0 y ≤ 𝐵                      (48)        Let 𝑃𝑑 be the random orthogonal matrix which projects a 𝐷-
+                            y∈ G                 2                                   dimensional vector to 𝑑-dimensional space. We present the details
+                                                                                     of the estimation for ∥o𝑟 − q𝑟 ∥ 2 as follows.
+Based on the analysis above, we prove (32) as follows.
+                                                                                          ∥o𝑟 − q𝑟 ∥ 2                                                   (61)
+                                                                                                   2             2
+                                                                                         =∥o𝑟 − c∥ + ∥q𝑟 − c∥ − 2 · ⟨o𝑟 − c, q𝑟 − c⟩
+                                         √︄
+                                          2                                                                                                          (62)
+         √︃                     2𝑒 −𝑐 0 𝐿 
+                                            
+                      𝐿                     
+    P 1 − ⟨o, ō⟩ 2 > 𝐵 +                                                (49)                                       2𝐷
+    
+                     2              𝑐 0𝛿                                              ≈∥o𝑟 − c∥ 2 + ∥q𝑟 − c∥ 2 −    · ⟨𝑃𝑑 (o𝑟 − c), 𝑃𝑑 (q𝑟 − c)⟩    (63)
+                                                                                                                   𝑑
+                                                       √︄                                                           2𝐷
+                                                                                         =∥o𝑟 − c∥ 2 + ∥q𝑟 − c∥ 2 −    · ∥𝑃𝑑 (o𝑟 − c)∥ · ∥𝑃𝑑 (q𝑟 − c) ∥
+                                                                  2 
+                                                          2𝑒 −𝑐 0 𝐿 
+                                                                    
+     ′
+              ′                  ′                 𝐿                
+  ≤P o − 𝑓 (o ) + min 𝑓 (o ) − 𝑡 0 y > 𝐵 +                               (50)                                        𝑑
+    
+                    y∈ G                          2        𝑐 0𝛿    
+                                                                                            
+                                                                                               𝑃𝑑 (o𝑟 − c)    𝑃 (q𝑟 − c)
+                                                                                                                           
+                                                                                        ·                , 𝑑                                         (64)
+                                      √︄
+                                                   2 
+                                                                                              ∥𝑃𝑑 (o𝑟 − c)∥ ∥𝑃𝑑 (q𝑟 − c)∥
+    
+                      𝐿        𝐿             −𝑐
+                                          2𝑒 0   𝐿   
+  ≤P o − 𝑓 (o′ ) + 𝐵 > 𝐵 +
+     ′
+                                                    
+                                                     
+                                                                         (51)            ≈∥o𝑟 − c∥ 2 + ∥q𝑟 − c∥ 2 − 2 · ∥o𝑟 − c∥ · ∥q𝑟 − c∥
+    
+                    2       2               𝑐 0𝛿                                                                        
+                                                                                             𝑃𝑑 (o𝑟 − c)    𝑃𝑑 (q𝑟 − c)
+                     √︄                                                                   ·                ,                                             (65)
+    
+                          −𝑐
+                         2𝑒 0   𝐿
+                                     
+                                   2                                                         ∥𝑃𝑑 (o𝑟 − c)∥ ∥𝑃𝑑 (q𝑟 − c)∥
+  =P o′ − 𝑓 (o′ ) >
+    
+                                    
+                                        ≤𝛿                               (52)        Here  (63) and (65) are based
+                          𝑐 0 𝛿                                                    D                            E on Johnson-Lindenstrauss Lemma [39].
+                                                                                        𝑃𝑑 (o𝑟 −c)    𝑃𝑑 (q𝑟 −c)
+                                    
+                                                                                       ∥𝑃𝑑 (o𝑟 −c) ∥ ∥𝑃𝑑 (q𝑟 −c) ∥ is the inner product between two unit
+                                                                                                    ,
+                                    
+
+where (50) applies (37). (51) applies (48). (52) applies (47).             □         vectors in 𝑑-dimensional space, whose estimation can be realized
+                                                                                     with RaBitQ.
+
+   Based on the lemmas above, we prove Theorem 3.2 as follows.
+                                                                                16
+
