@@ -1,0 +1,10 @@
+# Generated datasets / outputs (can be huge)
+/runs/
+
+# Local sanity artifacts
+/sanity_data/
+/outputs/
+
+# DiskANN binary formats
+*.fbin
+*.ibin

@@ -1,0 +1,101 @@
+{
+  "search_directories": [
+    "/mnt/nvme2n1p1/xtang/ann-data/dbpedia-openai-1000k-angular-bin"
+  ],
+  "jobs": [
+    {
+      "type": "async-index-build-pq",
+      "content": {
+        "index_operation": {
+          "source": {
+            "index-source": "Build",
+            "data_type": "float32",
+            "data": "train.fbin",
+            "distance": "cosine",
+            "start_point_strategy": "medoid",
+            "max_degree": 64,
+            "l_build": 128,
+            "alpha": 1.2,
+            "backedge_ratio": 1.0,
+            "num_threads": 64,
+            "multi_insert": null,
+            "save_path": null
+          },
+          "search_phase": {
+            "search-type": "topk",
+            "queries": "test.fbin",
+            "groundtruth": "neighbors.ibin",
+            "reps": 3,
+            "num_threads": [
+              64
+            ],
+            "runs": [
+              {
+                "search_n": 100,
+                "search_l": [
+                  100,
+                  200,
+                  400
+                ],
+                "recall_k": 10
+              }
+            ]
+          }
+        },
+        "num_pq_chunks": 64,
+        "seed": 13076402859301299683,
+        "max_fp_vecs_per_prune": 48,
+        "use_fp_for_search": false
+      }
+    },
+    {
+      "type": "async-index-build-spherical-quantization",
+      "content": {
+        "build": {
+          "data_type": "float32",
+          "data": "train.fbin",
+          "distance": "cosine",
+          "start_point_strategy": "medoid",
+          "max_degree": 64,
+          "l_build": 128,
+          "alpha": 1.2,
+          "backedge_ratio": 1.0,
+          "num_threads": 64,
+          "multi_insert": null,
+          "save_path": null
+        },
+        "search_phase": {
+          "search-type": "topk",
+          "queries": "test.fbin",
+          "groundtruth": "neighbors.ibin",
+          "reps": 3,
+          "num_threads": [
+            64
+          ],
+          "runs": [
+            {
+              "search_n": 100,
+              "search_l": [
+                100,
+                200,
+                400
+              ],
+              "recall_k": 10
+            }
+          ]
+        },
+        "seed": 12648430,
+        "transform_kind": {
+          "padding_hadamard": "same"
+        },
+        "query_layouts": [
+          "scalar_quantized",
+          "same_as_data",
+          "full_precision"
+        ],
+        "num_bits": 4,
+        "pre_scale": null
+      }
+    }
+  ]
+}
