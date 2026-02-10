@@ -1,0 +1,51 @@
+{
+  "remote": {
+    "host": "172.16.116.90",
+    "port": 22,
+    "username": "root",
+    "password": null,
+    "allow_unknown_host_keys": true
+  },
+  "paths": {
+    "remote_workspace_root": "/home/xtang/diskann-workspace",
+    "remote_playground_dir": "/home/xtang/diskann-workspace/DiskANN-playground",
+    "remote_diskann_rs_dir": "/home/xtang/diskann-workspace/DiskANN-rs",
+    "remote_diskann_dir": "/home/xtang/diskann-workspace/DiskANN",
+    "dataset_name": null,
+    "remote_hdf5_path": null,
+    "remote_results_dir": null
+  },
+  "options": {
+    "clean_remote_playground": true,
+    "clean_remote_diskann_rs": true,
+    "upload_diskann_rs": true,
+    "clone_diskann_if_missing": true
+  },
+  "cpu_bind": {
+    "apply_to": ["test"],
+    "taskset_cpus": "0-31",
+    "numactl_physcpubind": null,
+    "numactl_membind": null
+  },
+  "pre_requirements": {
+    "enable": true,
+    "scripts": [
+      "remote-test/pre-requirements/ubuntu_apt.sh",
+      "remote-test/pre-requirements/install_miniforge.sh",
+      "remote-test/pre-requirements/install_rustup.sh",
+      "remote-test/pre-requirements/check_env.sh"
+    ]
+  },
+  "conda": {
+    "env_name": "diskann-rs",
+    "auto_activate": true,
+    "create_if_missing": true,
+    "create_command": "conda create -n diskann-rs -y -c conda-forge python=3.12 numpy h5py"
+  },
+  "data_copy": {
+    "enable": false,
+    "if_missing_only": true,
+    "local_hdf5_path": null,
+    "remote_hdf5_path": null
+  }
+}

@@ -1,0 +1,9 @@
+# Local config (contains credentials)
+config.json
+
+# Local secrets
+.secrets/
+
+# Python cache
+__pycache__/
+*.pyc
