@@ -12,8 +12,8 @@
     "remote_diskann_rs_dir": "/home/xtang/diskann-workspace/DiskANN-rs",
     "remote_diskann_dir": "/home/xtang/diskann-workspace/DiskANN",
     "dataset_name": null,
-    "remote_hdf5_path": null,
-    "remote_results_dir": null
+    "remote_hdf5_path": "/home/xtang/ann-data/dbpedia-openai-1000k-angular.hdf5",
+    "remote_results_dir": "/home/xtang/diskann-results"
   },
   "options": {
     "clean_remote_playground": true,
@@ -30,10 +30,10 @@
   "pre_requirements": {
     "enable": true,
     "scripts": [
-      "remote-test/pre-requirements/ubuntu_apt.sh",
-      "remote-test/pre-requirements/install_miniforge.sh",
-      "remote-test/pre-requirements/install_rustup.sh",
-      "remote-test/pre-requirements/check_env.sh"
+      "extend-rabitq/remote-test/pre-requirements/ubuntu_apt.sh",
+      "extend-rabitq/remote-test/pre-requirements/install_miniforge.sh",
+      "extend-rabitq/remote-test/pre-requirements/install_rustup.sh",
+      "extend-rabitq/remote-test/pre-requirements/check_env.sh"
     ]
   },
   "conda": {
@@ -43,9 +43,9 @@
     "create_command": "conda create -n diskann-rs -y -c conda-forge python=3.12 numpy h5py"
   },
   "data_copy": {
-    "enable": false,
+    "enable": true,
     "if_missing_only": true,
-    "local_hdf5_path": null,
+    "local_hdf5_path": "/mnt/nvme2n1p1/xtang/ann-data/dbpedia-openai-1000k-angular.hdf5",
     "remote_hdf5_path": null
   }
 }

@@ -31,14 +31,14 @@ If you don't want to pre-place the dataset on the remote machine, use `data_copy
 
 ## Remote prerequirements (自动安装依赖)
 
-`remote-test/pre-requirements/` contains optional scripts that can be executed on the remote machine.
+`extend-rabitq/remote-test/pre-requirements/` contains optional scripts that can be executed on the remote machine.
 
 In config:
 - `pre_requirements.enable`: whether to run prereq scripts after upload/extract
 - `pre_requirements.scripts`: list of script paths relative to `DiskANN-playground/`
 
 Example:
-- `"scripts": ["remote-test/pre-requirements/ubuntu_apt.sh", "remote-test/pre-requirements/check_env.sh"]`
+- `"scripts": ["extend-rabitq/remote-test/pre-requirements/ubuntu_apt.sh", "extend-rabitq/remote-test/pre-requirements/check_env.sh"]`
 
 ## Conda environment (远端 conda 环境)
 
@@ -89,11 +89,11 @@ Notes:
 
 2. Dry run:
 
-- `python3 remote-test/remote_test.py --config remote-test/config.json --dry-run`
+- `python3 extend-rabitq/remote-test/remote_test.py --config extend-rabitq/remote-test/config.json --dry-run`
 
 3. Run:
 
-- `python3 remote-test/remote_test.py --config remote-test/config.json`
+- `python3 extend-rabitq/remote-test/remote_test.py --config extend-rabitq/remote-test/config.json`
 
 ## CPU binding (绑核)
 
