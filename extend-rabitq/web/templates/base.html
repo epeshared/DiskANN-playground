@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h2 style="margin:0"><a href="/">DiskANN runs</a></h2>
+      <span class="badge">runs_dir={{ runs_dir }}</span>
+    </div>
+    {% if breadcrumbs %}
+      <div class="breadcrumbs">{{ breadcrumbs|safe }}</div>
+    {% endif %}
+
+    {% block content %}{% endblock %}
+
+    <div class="small" style="margin-top: 28px;">
+      extend-rabitq web server
+    </div>
+  </div>
+</body>
+</html>

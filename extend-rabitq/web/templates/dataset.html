@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; gap:12px; align-items:baseline;">
+      <h3 style="margin:0">Dataset: {{ dataset }}</h3>
+      <span class="small">{{ runs|length }} runs</span>
+    </div>
+    {% if runs %}
+      <ul>
+        {% for r in runs %}
+          <li>
+            <a href="/run/{{ dataset | urlencode }}/{{ r | urlencode }}">{{ r }}</a>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="small">No runs found.</div>
+    {% endif %}
+  </div>
+{% endblock %}

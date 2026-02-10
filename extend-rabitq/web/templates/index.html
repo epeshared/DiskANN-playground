@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="card">
+    <div class="small">Datasets found under <code>{{ runs_dir }}</code></div>
+    {% if datasets %}
+      <ul>
+        {% for d in datasets %}
+          <li><a href="/dataset/{{ d | urlencode }}">{{ d }}</a></li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="small">No datasets found.</div>
+    {% endif %}
+  </div>
+{% endblock %}

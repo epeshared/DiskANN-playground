@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; gap:12px; align-items:baseline;">
+      <h3 style="margin:0">Run: {{ dataset }}/{{ run_id }}</h3>
+      <span class="small">{{ run_path }}</span>
+    </div>
+
+    <div style="margin-top:10px; display:flex; flex-wrap:wrap; gap:10px;">
+      {% for f in downloads %}
+        <a class="badge" href="{{ f.href }}">download {{ f.label }}</a>
+      {% endfor %}
+    </div>
+  </div>
+
+  {% if summary_headers and summary_rows %}
+    <div class="card">
+      <h4 style="margin-top:0">summary.tsv</h4>
+      <div style="overflow:auto; max-height: 520px; border: 1px solid var(--border); border-radius: 10px;">
+        <table>
+          <thead>
+            <tr>
+              {% for h in summary_headers %}
+                <th>{{ h }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in summary_rows %}
+              <tr>
+                {% for h in summary_headers %}
+                  <td>{{ row.get(h, "") }}</td>
+                {% endfor %}
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="small" style="margin-top:8px;">
+        Tips: use browser search to filter; download for offline analysis.
+      </div>
+    </div>
+  {% endif %}
+
+  {% if details_html %}
+    <div class="card">
+      <h4 style="margin-top:0">details.md</h4>
+      <div>
+        {{ details_html | safe }}
+      </div>
+    </div>
+  {% endif %}
+
+  {% if server_info %}
+    <div class="card">
+      <h4 style="margin-top:0">server-info.txt</h4>
+      <pre>{{ server_info }}</pre>
+    </div>
+  {% endif %}
+{% endblock %}
