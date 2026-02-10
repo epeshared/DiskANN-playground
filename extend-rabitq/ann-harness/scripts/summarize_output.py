@@ -49,6 +49,9 @@ def _extract_topk_rows(container):
     rows = []
     for r in topk_list:
         recall = r.get('recall', {}) if isinstance(r, dict) else {}
+
+        mean_latencies = r.get('mean_latencies', []) if isinstance(r, dict) else []
+        p99_latencies = r.get('p99_latencies', []) if isinstance(r, dict) else []
         rows.append(
             {
                 'search_l': r.get('search_l'),
@@ -56,6 +59,11 @@ def _extract_topk_rows(container):
                 'num_tasks': r.get('num_tasks'),
                 'qps_mean': _mean(r.get('qps', [])) if isinstance(r, dict) else None,
                 'qps_max': _max(r.get('qps', [])) if isinstance(r, dict) else None,
+                # Latencies are reported in microseconds in diskann-benchmark output.
+                'lat_mean_us_mean': _mean(mean_latencies),
+                'lat_mean_us_max': _max(mean_latencies),
+                'lat_p99_us_mean': _mean(p99_latencies),
+                'lat_p99_us_max': _max(p99_latencies),
                 'recall_avg': recall.get('average') if isinstance(recall, dict) else None,
                 'recall_k': recall.get('recall_k') if isinstance(recall, dict) else None,
                 'recall_n': recall.get('recall_n') if isinstance(recall, dict) else None,
@@ -85,6 +93,10 @@ def main() -> int:
         'recall(avg)',
         'QPS(mean)',
         'QPS(max)',
+        'lat_mean_us(mean)',
+        'lat_mean_us(max)',
+        'lat_p99_us(mean)',
+        'lat_p99_us(max)',
     ]
     print('\t'.join(headers))
 
@@ -125,6 +137,10 @@ def main() -> int:
                                 _fmt(row.get('recall_avg'), nd=4),
                                 _fmt(row.get('qps_mean'), nd=1),
                                 _fmt(row.get('qps_max'), nd=1),
+                                _fmt(row.get('lat_mean_us_mean'), nd=1),
+                                _fmt(row.get('lat_mean_us_max'), nd=1),
+                                _fmt(row.get('lat_p99_us_mean'), nd=1),
+                                _fmt(row.get('lat_p99_us_max'), nd=1),
                             ]
                         )
                     )
@@ -143,6 +159,10 @@ def main() -> int:
                             _fmt(row.get('recall_avg'), nd=4),
                             _fmt(row.get('qps_mean'), nd=1),
                             _fmt(row.get('qps_max'), nd=1),
+                            _fmt(row.get('lat_mean_us_mean'), nd=1),
+                            _fmt(row.get('lat_mean_us_max'), nd=1),
+                            _fmt(row.get('lat_p99_us_mean'), nd=1),
+                            _fmt(row.get('lat_p99_us_max'), nd=1),
                         ]
                     )
                 )

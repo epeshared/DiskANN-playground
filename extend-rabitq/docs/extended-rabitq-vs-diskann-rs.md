@@ -3,8 +3,8 @@
 > 目标：把论文（`extend rabitq.pdf` / `extend_rabitq.txt`）里“Extended RaBitQ”的关键步骤（索引阶段/查询阶段/估计式）逐条映射到 DiskANN-rs 的具体 **函数 / 模块 / 数据结构**，并说明哪些地方是“同构实现”、哪些地方是“等价但实现不同”、哪些地方目前 **未实现**。
 
 相关材料：
-- 论文文本抽取：[`../docs/extend_rabitq.txt`](../docks/extend_rabitq.txt)
-- 论文 PDF：[`../docs/extend rabitq.pdf`](../docks/extend%20rabitq.pdf)
+- 论文文本抽取：[`extend_rabitq.txt`](extend_rabitq.txt)
+- 论文 PDF：[`extend rabitq.pdf`](extend%20rabitq.pdf)
 
 代码范围（DiskANN-rs）：主要集中在 `diskann-quantization` crate 的 `spherical` 实现：
 - 量化器：`DiskANN-rs/diskann-quantization/src/spherical/quantizer.rs`

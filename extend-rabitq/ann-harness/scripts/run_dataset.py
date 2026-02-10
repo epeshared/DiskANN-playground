@@ -87,6 +87,7 @@ def main() -> int:
     config_path = config_dir / 'pq-vs-spherical.json'
     output_json = outputs_dir / 'output.json'
     summary_tsv = outputs_dir / 'summary.tsv'
+    details_md = outputs_dir / 'details.md'
 
     data_dir.mkdir(parents=True, exist_ok=True)
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -167,8 +168,12 @@ def main() -> int:
     proc = run([py, str(scripts_dir / 'summarize_output.py'), '--input', str(output_json)], capture=True)
     summary_tsv.write_text(proc.stdout, encoding='utf-8')
 
+    details = run([py, str(scripts_dir / 'explain_output.py'), '--input', str(output_json)], capture=True)
+    details_md.write_text(details.stdout, encoding='utf-8')
+
     print('Wrote output:', str(output_json))
     print('Wrote summary:', str(summary_tsv))
+    print('Wrote details:', str(details_md))
     print(proc.stdout)
     return 0
 
