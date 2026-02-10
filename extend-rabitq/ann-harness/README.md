@@ -52,6 +52,105 @@
 .../run_dataset.py --hdf5 your.hdf5 --train-key train --test-key test --neighbors-key neighbors
 ```
 
+## 本地快速测试（run_dataset.sh）
+
+如果你只想快速验证“本机环境 + DiskANN-rs benchmark + harness 脚本”是否能通，可以直接跑 [`scripts/run_dataset.sh`](scripts/run_dataset.sh)。
+
+它本质上是对 [`scripts/run_dataset.py`](scripts/run_dataset.py) 的一层 wrapper，参数通过环境变量传入（带默认值）：
+
+- `HDF5_PATH`：输入 `.hdf5` 路径
+- `DATASET`：输出目录名（写到 `runs/<DATASET>/...`）
+- `DISTANCE`：距离度量（例如 `cosine`）
+- `SEARCH_N` / `SEARCH_L`：search sweep 参数
+- `REBUILD_INDEX`：`true/false`，是否强制重建缓存 index
+- `EMON_ENABLE`：`true/false`，是否启用 EMON（本地 sanity 建议先 `false`）
+
+### 用仓库自带的小数据跑通（推荐）
+
+workspace 根目录自带了一个很小的 HDF5：`tmp_sanity_small.hdf5`，适合做“能不能跑通”的测试。
+
+```bash
+# 1) 确保你当前 shell 的 python 有 numpy/h5py
+#    （例如：source /mnt/nvme2n1p1/xtang/diskann-workspace/.venv/bin/activate）
+
+cd DiskANN-playground/extend-rabitq/ann-harness/scripts
+
+# 2) 跑一个很小的 sweep，尽量快
+HDF5_PATH=/mnt/nvme2n1p1/xtang/diskann-workspace/tmp_sanity_small.hdf5 \
+DATASET=tmp-sanity-small \
+DISTANCE=cosine \
+SEARCH_N=10 \
+SEARCH_L=10,20,40 \
+REBUILD_INDEX=true \
+EMON_ENABLE=false \
+bash run_dataset.sh
+```
+
+预期输出目录：`DiskANN-playground/extend-rabitq/ann-harness/runs/tmp-sanity-small/<timestamp>/`。
+
+如果你想跑你自己的数据，把 `HDF5_PATH` 换成你的 `.hdf5` 即可；如果远端/本地数据 key 不同，请直接改用 `run_dataset.py`（支持 `--train-key/--test-key/--neighbors-key`）。
+
+### 常见问题
+
+- `run_benchmark.sh` 会调用 `cargo run ... --package diskann-benchmark`，因此需要本机已安装 Rust toolchain，并且能编译 [DiskANN-rs](../../../DiskANN-rs/)。
+- 如果 `python` 找不到 `numpy/h5py`，优先检查你是否激活了正确的虚拟环境。
+
+## 远程跑（remote-test）
+
+如果你希望把“上传代码 + 远端编译 + 远端跑 benchmark + 拉回 runs 结果”串起来，可以用 `extend-rabitq/remote-test`。
+
+它会在远端执行：
+
+1) 上传 `DiskANN-playground/`（以及可选的 `DiskANN-rs/`）
+2) 确保远端存在 C++ DiskANN repo（缺失则 clone）
+3) 运行 `DiskANN-playground/diskann-rs/build_all_targets.sh`（编译 DiskANN-rs）
+4) 在远端跑 `DiskANN-playground/extend-rabitq/ann-harness/scripts/run_dataset.sh`
+5) 把最新一次 `runs/<dataset>/<timestamp>/` 下载回本地 `DiskANN-playground/extend-rabitq/ann-harness/runs/`
+
+详细说明见：
+
+- [../remote-test/README.md](../remote-test/README.md)
+
+### 最小用法
+
+1) 从示例配置复制一份：
+
+```bash
+cp DiskANN-playground/extend-rabitq/remote-test/config.example.json \
+   DiskANN-playground/extend-rabitq/remote-test/config.json
+```
+
+安装依赖（本机）：
+
+```bash
+python3 -m pip install -r DiskANN-playground/extend-rabitq/remote-test/requirements.txt
+```
+
+2) 编辑 `config.json`（至少填远端 host/username，确认远端路径与数据集路径）。
+
+3) 先 dry-run 看看会做什么：
+
+```bash
+python3 DiskANN-playground/extend-rabitq/remote-test/remote_test.py \
+  --config DiskANN-playground/extend-rabitq/remote-test/config.json \
+  --dry-run
+```
+
+4) 正式跑：
+
+```bash
+python3 DiskANN-playground/extend-rabitq/remote-test/remote_test.py \
+  --config DiskANN-playground/extend-rabitq/remote-test/config.json
+```
+
+### 关键配置项提示
+
+- `paths.remote_hdf5_path`：远端数据集路径。remote-test 会通过设置 `HDF5_PATH=...` 环境变量传给 `run_dataset.sh`。
+- `data_copy`：如果远端没有数据集，可以开启把本地 `.hdf5` 自动拷到远端。
+- `paths.remote_results_dir`：把 `ann-harness/runs` 变成 symlink 指向独立目录，便于清理远端工作区但保留结果。
+- `conda`：可选的远端 conda 集成（自动激活/按需创建 env）。
+- `cpu_bind`：可选绑核（`taskset` / `numactl`），默认只对 test 阶段生效。
+
 ## 结果文件定位与解读
 
 假设运行时指定：`--dataset my-dataset`，则输出目录为：
