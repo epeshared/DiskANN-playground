@@ -117,32 +117,35 @@ def main() -> int:
             {
                 'type': 'async-index-build-spherical-quantization',
                 'content': {
-                    'build': {
-                        'data_type': 'float32',
-                        'data': 'train.fbin',
-                        'distance': 'cosine',
-                        'start_point_strategy': 'medoid',
-                        'max_degree': 32,
-                        'l_build': 64,
-                        'alpha': 1.2,
-                        'backedge_ratio': 1.0,
-                        'num_threads': 8,
-                        'multi_insert': None,
-                        'save_path': None,
-                    },
-                    'search_phase': {
-                        'search-type': 'topk',
-                        'queries': 'test.fbin',
-                        'groundtruth': 'neighbors.ibin',
-                        'reps': 2,
-                        'num_threads': [8],
-                        'runs': [
-                            {
-                                'search_n': args.k,
-                                'search_l': [args.k, max(args.k, 80), max(args.k, 120)],
-                                'recall_k': 10,
-                            }
-                        ],
+                    'index_operation': {
+                        'source': {
+                            'index-source': 'Build',
+                            'data_type': 'float32',
+                            'data': 'train.fbin',
+                            'distance': 'cosine',
+                            'start_point_strategy': 'medoid',
+                            'max_degree': 32,
+                            'l_build': 64,
+                            'alpha': 1.2,
+                            'backedge_ratio': 1.0,
+                            'num_threads': 8,
+                            'multi_insert': None,
+                            'save_path': None,
+                        },
+                        'search_phase': {
+                            'search-type': 'topk',
+                            'queries': 'test.fbin',
+                            'groundtruth': 'neighbors.ibin',
+                            'reps': 2,
+                            'num_threads': [8],
+                            'runs': [
+                                {
+                                    'search_n': args.k,
+                                    'search_l': [args.k, max(args.k, 80), max(args.k, 120)],
+                                    'recall_k': 10,
+                                }
+                            ],
+                        },
                     },
                     'seed': 0xc0ffee,
                     'transform_kind': {'padding_hadamard': 'same'},

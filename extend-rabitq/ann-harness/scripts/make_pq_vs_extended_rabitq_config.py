@@ -115,10 +115,13 @@ def main() -> int:
     spherical_job = {
         'type': 'async-index-build-spherical-quantization',
         'content': {
-            'build': {
-                **{**base_index_build, 'distance': distance_spherical},
+            'index_operation': {
+                'source': {
+                    'index-source': 'Build',
+                    **{**base_index_build, 'distance': distance_spherical},
+                },
+                'search_phase': search_phase,
             },
-            'search_phase': search_phase,
             'seed': 0xc0ffee,
             'transform_kind': transform_kind,
             'query_layouts': query_layouts,

@@ -1,6 +1,9 @@
 # Generated datasets / outputs (can be huge)
 /runs/
 
+# Persistent index cache (can be huge)
+/index-cache/
+
 # Local sanity artifacts
 /sanity_data/
 /outputs/
@@ -8,3 +11,7 @@
 # DiskANN binary formats
 *.fbin
 *.ibin
+
+# Python cache
+__pycache__/
+*.pyc

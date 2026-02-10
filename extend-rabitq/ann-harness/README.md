@@ -9,10 +9,23 @@
 
 ## 一条命令跑完（推荐）
 
-`scripts/run_dataset.py` 会在 `runs/<dataset>/` 下生成：
+`scripts/run_dataset.py` 会在 `runs/<dataset>/<timestamp>/` 下生成（`timestamp` 为 UTC 时间戳）：
 - `data/`：`train.fbin/test.fbin/neighbors.ibin`
-- `configs/`：`pq-vs-spherical.json`
-- `outputs/`：`output.json` + `summary.tsv` + `details.md`
+- `configs/`：`pq-vs-spherical.json`（`--emon-enable` 时还会额外生成 `pq-vs-spherical.build.json` / `pq-vs-spherical.search.json`）
+- `indices/`：（仅 `--emon-enable`）build 阶段产物，供后续 load+search 使用
+- `outputs/`：
+  - 默认：`output.json` + `summary.tsv` + `details.md`
+  - `--emon-enable`：`output.build.json` / `output.search.json` + 对应的 `summary.*.tsv` / `details.*.md`（同时 `summary.tsv`/`details.md` 默认指向 search 结果）
+- `server-info.txt`：本机 `lscpu`（以及 `uname -a`）输出，用于记录跑 benchmark 的机器信息
+- （可选）`emon/<slice>/emon.dat`：如果传 `--emon-enable`，会把 **EMON 采样只包住 search 阶段**（build 不采样），并且会把搜索 sweep 拆开，做到更细粒度的采样文件：
+  - PQ：按线程数 / N / L 拆分
+  - Spherical：在上面基础上，再按 layout（`scalar_quantized` / `same_as_data` / `full_precision`）拆分
+  因此最终会生成多份 `emon.dat`，每份只覆盖一个 slice 的一次 search invocation。
+  1) 先跑 build-only（清空 search runs + 强制 save_path）
+  2) `emon -collect-edp` 启动采样
+  3) 再跑 load+search（从 `indices/` load）
+  4) `emon -stop` 结束采样
+  5) 对下一个 slice 重复 2)~4)
 
 示例（以 DBPedia OpenAI 1000K angular 为例）：
 
@@ -26,6 +39,13 @@
   --search-l 100,200,400,800
 ```
 
+如果要采集 Intel EMON（需要你已经安装 SEP，并且 `emon` 在 PATH 里；常见做法是先 `source /opt/intel/sep/sep_vars.sh`）：
+
+```bash
+.../run_dataset.py --hdf5 your.hdf5 --dataset your-dataset --emon-enable
+```
+```
+
 如果你的 HDF5 key 不是默认的 `train/test/neighbors`，可以指定：
 
 ```bash
@@ -34,9 +54,11 @@
 
 ## 结果文件定位与解读
 
-假设运行时指定：`--dataset my-dataset`，则输出目录固定为：
+假设运行时指定：`--dataset my-dataset`，则输出目录为：
 
-`DiskANN-playground/extend-rabitq/ann-harness/runs/my-dataset/`
+`DiskANN-playground/extend-rabitq/ann-harness/runs/my-dataset/<timestamp>/`
+
+其中 `<timestamp>` 是每次运行自动生成的 UTC 时间戳目录；因此同一个 dataset 可以保存多次运行的结果而不互相覆盖。
 
 其中关键文件：
 
@@ -46,6 +68,21 @@
   - 用于画 recall–QPS/latency 曲线的**汇总表**（建议优先看这个）
 - `outputs/details.md`
   - 从 `output.json` 抽取的更“底层”的解释报告（build 时间、training_time、quantized_bytes、每个 layout 的 run 结构等）
+- `server-info.txt`
+  - 记录本次运行所在服务器的 CPU/系统信息（来自 `lscpu`），方便横向对比不同机器上的结果
+
+如果使用 `--emon-enable`，则会额外看到：
+
+- `configs/pq-vs-spherical.build.json`
+  - build-only 配置（清空 `search_phase.runs`，并强制每个 job 的 `save_path` 写入 `indices/`）
+- `configs/pq-vs-spherical.search.json`
+  - search-only 配置（把每个 job 的 `index_operation.source` 切到 `Load`，从 `indices/` 读取）
+- `outputs/output.build.json` / `outputs/output.search.json`
+  - 分别对应 build-only 与 load+search 的 benchmark 输出
+- `outputs/summary.build.tsv` / `outputs/summary.search.tsv`
+- `outputs/details.build.md` / `outputs/details.search.md`
+- `emon/emon.dat`
+  - `emon -collect-edp` 的输出（每个 job 一份；每份采样只覆盖该 job 的 search-only invocation）
 
 ### summary.tsv 字段说明
 
