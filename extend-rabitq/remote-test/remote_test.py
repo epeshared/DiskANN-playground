@@ -56,9 +56,9 @@ class OptionsConfig:
 class CpuBindConfig:
     # If set, uses taskset -c <cpus>
     taskset_cpus: str | None
-    # If set, uses numactl --physcpubind=<...>
+    # If set, uses numactl -C <...>
     numactl_physcpubind: str | None
-    # If set, uses numactl --membind=<...>
+    # If set, uses numactl -m <...>
     numactl_membind: str | None
     # Apply binding to build/test. Default is ['test'].
     apply_to: list[str]
@@ -270,9 +270,11 @@ def _remote_command_prefix(cpu_bind: CpuBindConfig) -> str:
     if cpu_bind.numactl_physcpubind is not None or cpu_bind.numactl_membind is not None:
         numa_parts = ["numactl"]
         if cpu_bind.numactl_physcpubind is not None:
-            numa_parts.append(f"--physcpubind={cpu_bind.numactl_physcpubind}")
+            numa_parts.append("-C")
+            numa_parts.append(str(cpu_bind.numactl_physcpubind))
         if cpu_bind.numactl_membind is not None:
-            numa_parts.append(f"--membind={cpu_bind.numactl_membind}")
+            numa_parts.append("-m")
+            numa_parts.append(str(cpu_bind.numactl_membind))
         parts.append(" ".join(shlex.quote(x) for x in numa_parts))
 
     if cpu_bind.taskset_cpus is not None:
@@ -659,6 +661,9 @@ def main() -> int:
             # Run dataset test.
             test_dir = f"{pcfg.remote_playground_dir}/extend-rabitq/ann-harness/scripts"
             env_parts: list[str] = [f"DATASET={shlex.quote(dataset)}"]
+            # Record CPU binding used for test runs (run_dataset.py will save it).
+            if prefix and "test" in cbcfg.apply_to:
+                env_parts.append(f"CPU_BIND_DESC={shlex.quote(prefix)}")
             if effective_remote_hdf5 is not None:
                 try:
                     _ssh_run(client, f"test -f {shlex.quote(effective_remote_hdf5)}")

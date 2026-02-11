@@ -107,6 +107,11 @@ Examples:
 - Bind test to NUMA node 0 cores + memory:
    - `"cpu_bind": {"apply_to": ["test"], "numactl_physcpubind": "0-31", "numactl_membind": "0"}`
 
+Notes:
+
+- `numactl_physcpubind` is applied as `numactl -C <cpus>` on the remote side.
+- `numactl_membind` is applied as `numactl -m <node>` on the remote side.
+
 If you want binding to apply to both build and test:
 - `"apply_to": ["build", "test"]`
 

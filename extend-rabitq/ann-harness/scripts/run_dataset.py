@@ -9,6 +9,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 import shutil
+import os
 
 
 def run(cmd: list[str], *, cwd: Path | None = None, capture: bool = False) -> subprocess.CompletedProcess:
@@ -26,9 +27,11 @@ def utc_timestamp() -> str:
     return datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
 
 
-def write_server_info(out_path: Path, *, run_id: str) -> None:
+def write_server_info(out_path: Path, *, run_id: str, cpu_bind: str | None) -> None:
     lines: list[str] = []
     lines.append(f"run_id: {run_id}")
+    if cpu_bind:
+        lines.append(f"cpu_bind: {cpu_bind}")
     try:
         proc = subprocess.run(['uname', '-a'], check=True, text=True, capture_output=True)
         lines.append('uname -a:')
@@ -159,6 +162,11 @@ def main() -> int:
             'will be deleted before rebuilding and saving again.'
         ),
     )
+    ap.add_argument(
+        '--cpu-bind',
+        default=os.environ.get('CPU_BIND_DESC') or None,
+        help='Optional informational string (e.g. "numactl -C 0-31 -m 0"). Saved into server-info.txt and cpu-bind.txt.',
+    )
     args = ap.parse_args()
 
     hdf5_path = Path(args.hdf5).resolve()
@@ -189,7 +197,9 @@ def main() -> int:
     outputs_dir = work_dir / 'outputs'
 
     work_dir.mkdir(parents=True, exist_ok=True)
-    write_server_info(work_dir / 'server-info.txt', run_id=run_id)
+    write_server_info(work_dir / 'server-info.txt', run_id=run_id, cpu_bind=args.cpu_bind)
+    if args.cpu_bind:
+        (work_dir / 'cpu-bind.txt').write_text(str(args.cpu_bind).strip() + '\n', encoding='utf-8')
 
     config_path = config_dir / 'pq-vs-spherical.json'
     output_json = outputs_dir / 'output.json'

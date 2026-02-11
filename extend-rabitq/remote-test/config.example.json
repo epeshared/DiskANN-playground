@@ -23,9 +23,9 @@
   },
   "cpu_bind": {
     "apply_to": ["test"],
-    "taskset_cpus": "0-31",
-    "numactl_physcpubind": null,
-    "numactl_membind": null
+    "taskset_cpus": null,
+    "numactl_physcpubind": "0-31",
+    "numactl_membind": "0"
   },
   "pre_requirements": {
     "enable": true,

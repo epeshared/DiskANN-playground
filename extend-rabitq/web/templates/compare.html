@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; gap:12px; align-items:baseline;">
+      <h3 style="margin:0">Compare: {{ dataset }}</h3>
+      <span class="small">A={{ a }} · B={{ b }}</span>
+    </div>
+
+    <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <span class="small">Δ mode:</span>
+      <label class="small"><input type="radio" name="mode" value="b_over_a" {% if mode == 'b_over_a' %}checked{% endif %}/> B/A</label>
+      <label class="small"><input type="radio" name="mode" value="a_over_b" {% if mode == 'a_over_b' %}checked{% endif %}/> A/B</label>
+      <button class="btn" id="swapBtn" type="button">Swap A ↔ B</button>
+      <span class="small" style="margin-left:10px;">{{ delta_label }}</span>
+    </div>
+
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px;">
+      <div class="card" style="margin:0;">
+        <div style="display:flex; justify-content:space-between; gap:12px; align-items:baseline;">
+          <h4 style="margin:0">Run A</h4>
+          <a class="badge" href="/run/{{ dataset | urlencode }}/{{ a | urlencode }}">open</a>
+        </div>
+        <div class="small" style="margin-top:8px;">{{ meta_a.run_path }}</div>
+        <div class="small" style="margin-top:8px;">cpu-bind.txt={{ "yes" if meta_a.has_cpu_bind_file else "no" }}</div>
+        <div class="small" style="margin-top:8px;">cores={{ meta_a.cpu_cores if meta_a.cpu_cores is not none else "-" }}</div>
+        <div class="small" style="margin-top:8px;">cpu model={{ meta_a.cpu_model if meta_a.cpu_model else "-" }}</div>
+        <div class="small" style="margin-top:8px;">CPU bind: <code>{{ meta_a.cpu_bind if meta_a.cpu_bind else "-" }}</code></div>
+      </div>
+
+      <div class="card" style="margin:0;">
+        <div style="display:flex; justify-content:space-between; gap:12px; align-items:baseline;">
+          <h4 style="margin:0">Run B</h4>
+          <a class="badge" href="/run/{{ dataset | urlencode }}/{{ b | urlencode }}">open</a>
+        </div>
+        <div class="small" style="margin-top:8px;">{{ meta_b.run_path }}</div>
+        <div class="small" style="margin-top:8px;">cpu-bind.txt={{ "yes" if meta_b.has_cpu_bind_file else "no" }}</div>
+        <div class="small" style="margin-top:8px;">cores={{ meta_b.cpu_cores if meta_b.cpu_cores is not none else "-" }}</div>
+        <div class="small" style="margin-top:8px;">cpu model={{ meta_b.cpu_model if meta_b.cpu_model else "-" }}</div>
+        <div class="small" style="margin-top:8px;">CPU bind: <code>{{ meta_b.cpu_bind if meta_b.cpu_bind else "-" }}</code></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; gap:12px; align-items:baseline;">
+      <h4 style="margin:0">summary.tsv compare</h4>
+      <span class="small">{{ delta_label }}</span>
+    </div>
+
+    <div style="margin-top:10px;">
+      <table>
+        <thead>
+          <tr>
+            {% for k in key_fields %}
+              <th>{{ k }}</th>
+            {% endfor %}
+            <th>present</th>
+            <th>metrics (A / B / Δ)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+            <tr>
+              {% for k in key_fields %}
+                <td>{{ r.get(k, "") }}</td>
+              {% endfor %}
+              <td class="small">{{ ("A" if r.present_a else "-") }} / {{ ("B" if r.present_b else "-") }}</td>
+              <td>
+                <table class="mini">
+                  <thead>
+                    <tr>
+                      <th>metric</th>
+                      <th>A</th>
+                      <th>B</th>
+                      <th>Δ%</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for m in r.metrics %}
+                      <tr>
+                        <td>{{ m.name }}</td>
+                        <td>{{ m.a }}</td>
+                        <td>{{ m.b }}</td>
+                        <td><code>{{ m.ratio_pct }}</code></td>
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="small" style="margin-top:10px;">
+      Tips: use browser search; sort/filter coming later.
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      const radios = Array.from(document.querySelectorAll('input[name="mode"]'));
+      const swapBtn = document.getElementById('swapBtn');
+      function selectedMode() {
+        const r = radios.find(x => x.checked);
+        return r ? r.value : 'b_over_a';
+      }
+      function navigate(aVal, bVal) {
+        const mode = encodeURIComponent(selectedMode());
+        const a = encodeURIComponent(aVal);
+        const b = encodeURIComponent(bVal);
+        window.location.href = `/compare/{{ dataset | urlencode }}?a=${a}&b=${b}&mode=${mode}`;
+      }
+      const a0 = '{{ a }}';
+      const b0 = '{{ b }}';
+      radios.forEach(r => r.addEventListener('change', () => navigate(a0, b0)));
+      if (swapBtn) {
+        swapBtn.addEventListener('click', () => navigate(b0, a0));
+      }
+    })();
+  </script>
+{% endblock %}

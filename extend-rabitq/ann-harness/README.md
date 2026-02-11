@@ -64,6 +64,7 @@
 - `SEARCH_N` / `SEARCH_L`：search sweep 参数
 - `REBUILD_INDEX`：`true/false`，是否强制重建缓存 index
 - `EMON_ENABLE`：`true/false`，是否启用 EMON（本地 sanity 建议先 `false`）
+- `NUMACTL_CPUS` / `NUMACTL_MEMBIND`：可选，使用 `numactl -C/-m` 绑核/绑内存（例如 `NUMACTL_CPUS=0-31 NUMACTL_MEMBIND=0`）
 
 ### 用仓库自带的小数据跑通（推荐）
 

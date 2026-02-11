@@ -6,6 +6,11 @@
       <span class="small">{{ run_path }}</span>
     </div>
 
+    <div class="small" style="margin-top:8px;">
+      CPU bind: <code>{{ cpu_bind if cpu_bind else "<none>" }}</code>
+      <span style="margin-left:10px;">cpu-bind.txt={{ "yes" if has_cpu_bind_file else "no" }}</span>
+    </div>
+
     <div style="margin-top:10px; display:flex; flex-wrap:wrap; gap:10px;">
       {% for f in downloads %}
         <a class="badge" href="{{ f.href }}">download {{ f.label }}</a>

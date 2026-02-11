@@ -37,6 +37,10 @@ a:hover { text-decoration: underline; }
   padding: 24px;
 }
 
+.container.wide {
+  max-width: 98vw;
+}
+
 .header {
   display: flex;
   align-items: baseline;
@@ -73,6 +77,16 @@ th {
   background: var(--card);
 }
 
+table.mini {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+table.mini th, table.mini td {
+  padding: 4px 6px;
+}
+
 code, pre {
   background: var(--code);
   border: 1px solid var(--border);
@@ -96,4 +110,18 @@ pre {
   padding: 2px 10px;
   font-size: 0.8rem;
   color: var(--muted);
+}
+
+.btn {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  padding: 6px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }

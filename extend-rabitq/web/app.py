@@ -103,6 +103,167 @@ def _markdown_to_html(md_text: str) -> str:
     return rendered
 
 
+def _extract_cpu_bind_from_server_info(server_info: str | None) -> str | None:
+    if not server_info:
+        return None
+    for line in server_info.splitlines():
+        # run_dataset.py writes: cpu_bind: <desc>
+        if line.startswith("cpu_bind:"):
+            v = line.split(":", 1)[1].strip()
+            return v or None
+    return None
+
+
+def _extract_cpu_model_from_server_info(server_info: str | None) -> str | None:
+    if not server_info:
+        return None
+    for line in server_info.splitlines():
+        # lscpu line format on Linux:
+        #   Model name:                           Intel(R) Xeon(R) ...
+        if line.lower().startswith("model name:"):
+            v = line.split(":", 1)[1].strip()
+            return v or None
+    return None
+
+
+def _extract_numactl_cpulist(cpu_bind: str | None) -> str | None:
+    if not cpu_bind:
+        return None
+    # Expect patterns like: "numactl -C 0-15 -m 0" (tokens) or "numactl -C0-15 -m0".
+    tokens = cpu_bind.split()
+    for i, tok in enumerate(tokens):
+        if tok == "-C" and i + 1 < len(tokens):
+            return tokens[i + 1].strip() or None
+        if tok.startswith("-C") and len(tok) > 2:
+            return tok[2:].strip() or None
+        if tok.startswith("--physcpubind="):
+            v = tok.split("=", 1)[1].strip()
+            return v or None
+    return None
+
+
+def _count_cpulist(cpulist: str | None) -> int | None:
+    if not cpulist:
+        return None
+    total = 0
+    for part in cpulist.split(","):
+        p = part.strip()
+        if not p:
+            continue
+        if "-" in p:
+            a, b, *rest = p.split("-")
+            if rest:
+                return None
+            try:
+                start = int(a)
+                end = int(b)
+            except ValueError:
+                return None
+            if end < start:
+                return None
+            total += (end - start + 1)
+        else:
+            try:
+                int(p)
+            except ValueError:
+                return None
+            total += 1
+    return total
+
+
+def _parse_sort_spec(spec: str | None) -> list[tuple[str, bool]]:
+    # Returns list[(field, reverse)]
+    # Supported fields: timestamp, cpu_cores, cpu_model
+    default = [
+        ("timestamp", True),
+        ("cpu_cores", True),
+        ("cpu_model", False),
+    ]
+    if not spec:
+        return default
+
+    allowed = {"timestamp", "cpu_cores", "cpu_model"}
+    out: list[tuple[str, bool]] = []
+    for raw in str(spec).split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        reverse = item.startswith("-")
+        field = item[1:] if reverse else item
+        if field not in allowed:
+            continue
+        out.append((field, reverse))
+    return out or default
+
+
+def _to_int_maybe(v: str | None) -> int | None:
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    try:
+        return int(s)
+    except ValueError:
+        return None
+
+
+def _to_float_maybe(v: str | None) -> float | None:
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s or s.lower() == "none":
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _fmt_delta(v: float | None) -> str:
+    if v is None:
+        return "-"
+    # Keep small deltas readable.
+    return f"{v:+.4g}"
+
+
+def _fmt_ratio_pct(numer: float | None, denom: float | None) -> str:
+    # Return percent change: ((numer/denom) - 1) * 100%.
+    # Example: +3.1% means numer is 3.1% higher than denom.
+    if numer is None or denom is None:
+        return "-"
+    if denom == 0:
+        return "-"
+    return f"{((numer / denom) - 1.0) * 100.0:+.2f}%"
+
+
+def _run_meta(run_dir: Path) -> dict[str, Any]:
+    server_info_head = _read_text_if_exists(run_dir / "server-info.txt", max_bytes=300_000)
+    cpu_bind = _read_text_if_exists(run_dir / "cpu-bind.txt")
+    if not cpu_bind:
+        cpu_bind = _extract_cpu_bind_from_server_info(server_info_head)
+
+    cpu_model = _extract_cpu_model_from_server_info(server_info_head)
+    cpu_cores = _count_cpulist(_extract_numactl_cpulist(cpu_bind))
+
+    return {
+        "cpu_bind": (cpu_bind.strip() if isinstance(cpu_bind, str) and cpu_bind.strip() else None),
+        "cpu_model": cpu_model,
+        "cpu_cores": cpu_cores,
+        "server_info": server_info_head,
+        "has_cpu_bind_file": (run_dir / "cpu-bind.txt").is_file(),
+        "run_path": str(run_dir),
+    }
+
+
+def _index_rows(rows: list[dict[str, str]], key_fields: list[str]) -> dict[tuple[str, ...], dict[str, str]]:
+    out: dict[tuple[str, ...], dict[str, str]] = {}
+    for r in rows:
+        k = tuple((r.get(f) or "").strip() for f in key_fields)
+        out[k] = r
+    return out
+
+
 def _breadcrumbs(*items: tuple[str, str]) -> str:
     # items: (label, href)
     parts: list[str] = []
@@ -161,7 +322,54 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/dataset/{dataset}", response_class=HTMLResponse)
     def dataset_page(dataset: str, request: Request):
         dataset_dir = _safe_join(settings.runs_dir, dataset)
-        runs = _list_dirs_sorted_desc(dataset_dir)
+        run_ids = _list_dirs_sorted_desc(dataset_dir)
+        sort_spec_raw = request.query_params.get("sort")
+        sort_spec = _parse_sort_spec(sort_spec_raw)
+        runs = []
+        for run_id in run_ids:
+            run_dir = dataset_dir / run_id
+            server_info_head = _read_text_if_exists(run_dir / "server-info.txt", max_bytes=200_000)
+            cpu_bind = _read_text_if_exists(run_dir / "cpu-bind.txt")
+            if not cpu_bind:
+                cpu_bind = _extract_cpu_bind_from_server_info(server_info_head)
+
+            cpu_model = _extract_cpu_model_from_server_info(server_info_head)
+            cpu_cores = _count_cpulist(_extract_numactl_cpulist(cpu_bind))
+
+            runs.append(
+                {
+                    "id": run_id,
+                    "timestamp": run_id,
+                    "has_cpu_bind": (run_dir / "cpu-bind.txt").is_file(),
+                    "cpu_bind": (cpu_bind.strip() if isinstance(cpu_bind, str) and cpu_bind.strip() else None),
+                    "cpu_cores": cpu_cores,
+                    "cpu_model": cpu_model,
+                }
+            )
+
+        # Apply multi-key sort. We sort last key first (stable sort) to honor sort_spec order.
+        for field, reverse in reversed(sort_spec):
+            if field == "timestamp":
+                runs.sort(key=lambda r: r.get("timestamp") or "", reverse=reverse)
+            elif field == "cpu_cores":
+                if reverse:
+                    runs.sort(
+                        key=lambda r: (
+                            r.get("cpu_cores") is None,
+                            -(int(r.get("cpu_cores")) if r.get("cpu_cores") is not None else 0),
+                        )
+                    )
+                else:
+                    runs.sort(
+                        key=lambda r: (
+                            r.get("cpu_cores") is None,
+                            int(r.get("cpu_cores")) if r.get("cpu_cores") is not None else 0,
+                        )
+                    )
+            elif field == "cpu_model":
+                runs.sort(key=lambda r: (r.get("cpu_model") or ""), reverse=reverse)
+                # Keep unknown CPU model (None) last regardless of direction.
+                runs.sort(key=lambda r: (r.get("cpu_model") is None))
         bc = _breadcrumbs(("datasets", "/"), (dataset, f"/dataset/{dataset}"))
         return templates.TemplateResponse(
             "dataset.html",
@@ -170,6 +378,7 @@ def create_app(settings: Settings) -> FastAPI:
                 "title": f"{dataset} runs",
                 "dataset": dataset,
                 "runs": runs,
+                "sort": sort_spec_raw or "-timestamp,-cpu_cores,cpu_model",
                 "runs_dir": str(settings.runs_dir),
                 "breadcrumbs": bc,
             },
@@ -181,6 +390,11 @@ def create_app(settings: Settings) -> FastAPI:
         if not run_dir.is_dir():
             raise HTTPException(status_code=404, detail="run not found")
 
+        cpu_bind_path = run_dir / "cpu-bind.txt"
+        has_cpu_bind_file = cpu_bind_path.is_file()
+
+        cpu_bind = _read_text_if_exists(cpu_bind_path)
+
         summary_path = run_dir / "outputs" / "summary.tsv"
         headers, rows = _read_tsv(summary_path)
 
@@ -188,9 +402,12 @@ def create_app(settings: Settings) -> FastAPI:
         details_html = _markdown_to_html(details_text) if details_text else None
 
         server_info = _read_text_if_exists(run_dir / "server-info.txt")
+        if not cpu_bind:
+            cpu_bind = _extract_cpu_bind_from_server_info(server_info)
 
         downloads = []
         for rel, label in [
+            ("cpu-bind.txt", "cpu-bind.txt"),
             ("outputs/summary.tsv", "summary.tsv"),
             ("outputs/details.md", "details.md"),
             ("outputs/output.json", "output.json"),
@@ -219,11 +436,128 @@ def create_app(settings: Settings) -> FastAPI:
                 "dataset": dataset,
                 "run_id": run_id,
                 "run_path": str(run_dir),
+                "has_cpu_bind_file": has_cpu_bind_file,
+                "cpu_bind": (cpu_bind.strip() if isinstance(cpu_bind, str) and cpu_bind.strip() else None),
                 "summary_headers": headers,
                 "summary_rows": rows,
                 "details_html": details_html,
                 "server_info": server_info,
                 "downloads": downloads,
+                "runs_dir": str(settings.runs_dir),
+                "breadcrumbs": bc,
+            },
+        )
+
+    @app.get("/compare/{dataset}", response_class=HTMLResponse)
+    def compare_page(dataset: str, request: Request):
+        a = request.query_params.get("a")
+        b = request.query_params.get("b")
+        mode = (request.query_params.get("mode") or "b_over_a").strip().lower()
+        if mode in {"ba", "b/a", "b_over_a"}:
+            mode = "b_over_a"
+        elif mode in {"ab", "a/b", "a_over_b"}:
+            mode = "a_over_b"
+        else:
+            mode = "b_over_a"
+
+        delta_label = "Δ = ((B/A) - 1) × 100%" if mode == "b_over_a" else "Δ = ((A/B) - 1) × 100%"
+        if not a or not b:
+            raise HTTPException(status_code=400, detail="missing query params: a, b")
+        if a == b:
+            raise HTTPException(status_code=400, detail="a and b must be different")
+
+        dataset_dir = _safe_join(settings.runs_dir, dataset)
+        run_a_dir = _safe_join(dataset_dir, a)
+        run_b_dir = _safe_join(dataset_dir, b)
+        if not run_a_dir.is_dir() or not run_b_dir.is_dir():
+            raise HTTPException(status_code=404, detail="run not found")
+
+        meta_a = _run_meta(run_a_dir)
+        meta_b = _run_meta(run_b_dir)
+
+        headers_a, rows_a = _read_tsv(run_a_dir / "outputs" / "summary.tsv")
+        headers_b, rows_b = _read_tsv(run_b_dir / "outputs" / "summary.tsv")
+
+        # Compare only on common columns.
+        common_headers = [h for h in headers_a if h in set(headers_b)]
+        key_fields = [f for f in ["job", "detail", "tasks", "L", "N"] if f in common_headers]
+        metric_fields = [h for h in common_headers if h not in key_fields]
+
+        # Show ALL metrics; order a few important ones first.
+        preferred_metrics = [
+            "recall(avg)",
+            "QPS(mean)",
+            "lat_mean_us(mean)",
+            "lat_p99_us(mean)",
+        ]
+        metrics = [m for m in preferred_metrics if m in metric_fields]
+        metrics.extend([m for m in metric_fields if m not in set(metrics)])
+
+        idx_a = _index_rows(rows_a, key_fields)
+        idx_b = _index_rows(rows_b, key_fields)
+        all_keys = sorted(set(idx_a.keys()) | set(idx_b.keys()))
+
+        def sort_key(k: tuple[str, ...]) -> tuple[Any, ...]:
+            # job/detail lexicographic; tasks/L/N numeric when possible.
+            parts: list[Any] = []
+            for name, v in zip(key_fields, k):
+                if name in {"tasks", "L", "N"}:
+                    parts.append(_to_int_maybe(v) if _to_int_maybe(v) is not None else v)
+                else:
+                    parts.append(v)
+            return tuple(parts)
+
+        all_keys.sort(key=sort_key)
+
+        compare_rows: list[dict[str, Any]] = []
+        for k in all_keys:
+            ra = idx_a.get(k)
+            rb = idx_b.get(k)
+            out: dict[str, Any] = {}
+            for i, f in enumerate(key_fields):
+                out[f] = k[i] if i < len(k) else ""
+            out["present_a"] = ra is not None
+            out["present_b"] = rb is not None
+
+            metric_rows: list[dict[str, Any]] = []
+            for m in metrics:
+                va = (ra.get(m) if ra else None)
+                vb = (rb.get(m) if rb else None)
+                da = _to_float_maybe(va)
+                db = _to_float_maybe(vb)
+                delta = _fmt_ratio_pct(db, da) if mode == "b_over_a" else _fmt_ratio_pct(da, db)
+                metric_rows.append(
+                    {
+                        "name": m,
+                        "a": (va if va is not None and str(va).strip() else "-"),
+                        "b": (vb if vb is not None and str(vb).strip() else "-"),
+                        "ratio_pct": delta,
+                    }
+                )
+            out["metrics"] = metric_rows
+            compare_rows.append(out)
+
+        bc = _breadcrumbs(
+            ("datasets", "/"),
+            (dataset, f"/dataset/{dataset}"),
+            ("compare", f"/compare/{dataset}?a={urllib.parse.quote(a)}&b={urllib.parse.quote(b)}&mode={urllib.parse.quote(mode)}"),
+        )
+        return templates.TemplateResponse(
+            "compare.html",
+            {
+                "request": request,
+                "title": f"compare {dataset}",
+                "dataset": dataset,
+                "a": a,
+                "b": b,
+                "meta_a": meta_a,
+                "meta_b": meta_b,
+                "mode": mode,
+                "delta_label": delta_label,
+                "key_fields": key_fields,
+                "metrics": metrics,
+                "rows": compare_rows,
+                "wide": True,
                 "runs_dir": str(settings.runs_dir),
                 "breadcrumbs": bc,
             },

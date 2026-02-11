@@ -5,14 +5,94 @@
       <h3 style="margin:0">Dataset: {{ dataset }}</h3>
       <span class="small">{{ runs|length }} runs</span>
     </div>
+    <div class="small" style="margin-top:8px;">
+      Sort: <code>{{ sort }}</code>
+      <span style="margin-left:10px;">
+        <a href="/dataset/{{ dataset | urlencode }}?sort=-timestamp,-cpu_cores,cpu_model">time↓</a>
+        · <a href="/dataset/{{ dataset | urlencode }}?sort=timestamp,-cpu_cores,cpu_model">time↑</a>
+        · <a href="/dataset/{{ dataset | urlencode }}?sort=-cpu_cores,-timestamp,cpu_model">cores↓</a>
+        · <a href="/dataset/{{ dataset | urlencode }}?sort=cpu_model,-timestamp,-cpu_cores">model↑</a>
+        · <a href="/dataset/{{ dataset | urlencode }}?sort=-cpu_model,-timestamp,-cpu_cores">model↓</a>
+      </span>
+    </div>
+
+    <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <button class="btn" id="compareBtn" type="button" disabled>点积对比 / Compare (select 2)</button>
+      <span class="small" id="compareHint">Select exactly two runs.</span>
+    </div>
     {% if runs %}
-      <ul>
-        {% for r in runs %}
-          <li>
-            <a href="/run/{{ dataset | urlencode }}/{{ r | urlencode }}">{{ r }}</a>
-          </li>
-        {% endfor %}
-      </ul>
+      <div style="overflow:auto; margin-top:10px; border: 1px solid var(--border); border-radius: 10px;">
+        <table>
+          <thead>
+            <tr>
+              <th>select</th>
+              <th>timestamp</th>
+              <th>cpu-bind.txt</th>
+              <th>cores</th>
+              <th>cpu model</th>
+              <th>cpu bind</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in runs %}
+              <tr>
+                <td>
+                  <input class="runPick" type="checkbox" value="{{ r.id | trim }}" />
+                </td>
+                <td>
+                  <a href="/run/{{ dataset | urlencode }}/{{ r.id | urlencode }}">{{ r.id }}</a>
+                </td>
+                <td>{{ "yes" if r.has_cpu_bind else "no" }}</td>
+                <td>{{ r.cpu_cores if r.cpu_cores is not none else "-" }}</td>
+                <td>{{ r.cpu_model if r.cpu_model else "-" }}</td>
+                <td><code>{{ r.cpu_bind if r.cpu_bind else "-" }}</code></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <script>
+        (function() {
+          const btn = document.getElementById('compareBtn');
+          const hint = document.getElementById('compareHint');
+          const picks = Array.from(document.querySelectorAll('input.runPick'));
+
+          function selected() {
+            return picks.filter(p => p.checked).map(p => p.value);
+          }
+
+          function update() {
+            const sel = selected();
+            if (sel.length === 2) {
+              btn.disabled = false;
+              hint.textContent = `Selected: ${sel[0]} vs ${sel[1]}`;
+            } else {
+              btn.disabled = true;
+              hint.textContent = 'Select exactly two runs.';
+            }
+          }
+
+          picks.forEach(p => p.addEventListener('change', () => {
+            // Enforce max 2 selections.
+            const sel = selected();
+            if (sel.length > 2) {
+              p.checked = false;
+            }
+            update();
+          }));
+
+          btn.addEventListener('click', () => {
+            const sel = selected();
+            if (sel.length !== 2) return;
+            const a = encodeURIComponent(sel[0]);
+            const b = encodeURIComponent(sel[1]);
+            window.location.href = `/compare/{{ dataset | urlencode }}?a=${a}&b=${b}`;
+          });
+
+          update();
+        })();
+      </script>
     {% else %}
       <div class="small">No runs found.</div>
     {% endif %}
