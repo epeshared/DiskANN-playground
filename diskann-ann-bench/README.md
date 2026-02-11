@@ -18,7 +18,7 @@ Repo layout assumption (matches this workspace):
 Notes:
 
 - In `install.py`, `--algorithm` refers to the **folder name** (here: `diskann_rs`).
-- In `run.py`, `--algorithm` refers to the **algorithm "name"** from `config.yml` (e.g. `diskann-rs` or `diskann-rs-smoke`).
+- In `run.py`, `--algorithm` refers to the **algorithm "name"** from `config.yml` (e.g. `diskann-rs`).
 
 ## Prerequisites
 
@@ -51,7 +51,6 @@ This copies `../DiskANN-rs/` into:
 Tip: this folder includes helper scripts:
 
 - `./build_images.sh` (vendors DiskANN-rs + builds base + algo images with `--network=host`)
-- `./run_smoke.sh` (runs a quick `diskann-rs-smoke` benchmark)
 
 ## Step 1: build Docker images
 
@@ -81,34 +80,120 @@ If your environment is fully offline:
 - you still need the Python wheels used by the base image (see `requirements.txt`)
 - consider pre-populating a wheelhouse and adjusting the base Dockerfile accordingly
 
-## Step 2: smoke test (small-ish)
-
-The `diskann_rs/config.yml` defines a small `diskann-rs-smoke` algorithm entry.
-
-```bash
-cd ../../ann-benchmark-epeshared
-
-# Quick-ish run: one algorithm, one run, small k
-python run.py \
-  --dataset glove-25-angular \
-  --algorithm diskann-rs-smoke \
-  -k 10 \
-  --runs 1 \
-  --timeout 900 \
-  --parallelism 1
-```
-
-What this does:
-
-- downloads the dataset into `ann-benchmark-epeshared/data/` if missing
-- runs the algorithm inside Docker and writes JSON results under `ann-benchmark-epeshared/results/`
-
-## Step 3: full run (same integration, larger sweep)
+## Step 2: full run (same integration, larger sweep)
 
 ```bash
 cd ../../ann-benchmark-epeshared
 python run.py --dataset glove-100-angular --algorithm diskann-rs -k 10 --runs 3 --timeout 7200 --parallelism 1
 ```
+
+## Split build/search + loop (harness-style)
+
+If you want an explicit **build stage** (build + save index once) and then a **search stage** that can loop the full query set (`--reps`), use:
+
+What `run_diskann_rs_split.py` does:
+
+- Creates a run folder under `DiskANN-playground/extend-rabitq/ann-harness/runs/<dataset>/<run_id>/` (unless `--work-dir` is provided)
+- Writes `mode.txt = ann_bench_diskann_rs` (used by the web UI for filtering)
+- Optional: writes `cpu-bind.txt` if you pass `--cpu-bind` (record-only; does not enforce affinity)
+- Build stage:
+  - reads `train` vectors from the HDF5
+  - builds the index and saves it under `index/`
+  - writes `outputs/output.build.json`
+- Search stage:
+  - loads the saved index
+  - runs search over the full `test` query set
+  - repeats the full query set `--reps` times (harness-style loop)
+  - computes recall vs `neighbors` and latency/QPS stats
+  - writes `outputs/output.search.json`
+- Produces web-friendly summary artifacts:
+  - `outputs/summary.tsv`
+  - `outputs/details.md`
+
+```bash
+cd ../../DiskANN-playground/diskann-ann-bench
+
+# Requires the Docker image to exist: ann-benchmarks-diskann_rs
+python run_diskann_rs_split.py \
+  --hdf5 ../../ann-benchmark-epeshared/data/glove-25-angular.hdf5 \
+  --metric cosine \
+  --l-build 128 \
+  --max-outdegree 64 \
+  --alpha 1.2 \
+  -k 10 \
+  --l-search 100 \
+  --reps 3
+```
+
+If you don't have Docker build network access (pip/rustup/git clone fail), you can still run the split workflow on the host:
+
+```bash
+cd ../../ann-benchmark-epeshared/ann_benchmarks/algorithms/diskann_rs/native
+cargo build
+
+cd ../../DiskANN-playground/diskann-ann-bench
+python run_diskann_rs_split.py --runner host \
+  --hdf5 ../../tmp_sanity_small.hdf5 \
+  --metric l2 -k 10 --l-search 50 --reps 2
+```
+
+The host runner auto-creates a `diskann_rs_native.so` symlink next to the cargo-built `libdiskann_rs_native.so` and sets `PYTHONPATH` so Python can import it.
+
+## Quick local run + web
+
+If you want a one-command local run (host runner + CPU binding recorded) and then start the local web UI:
+
+```bash
+bash DiskANN-playground/diskann-ann-bench/run_local.sh --hdf5 /path/to/dataset.hdf5
+bash DiskANN-playground/diskann-ann-bench/run_web.sh --host 127.0.0.1 --port 8081
+```
+
+What `run_local.sh` does:
+
+- Runs `cargo build` in `ann-benchmark-epeshared/ann_benchmarks/algorithms/diskann_rs/native`
+- Chooses a CPU bind range (default `0-16`, clamped to `0-(nproc-1)` if fewer cores)
+- Uses `numactl --physcpubind=...` (preferred) or `taskset -c ...` to **actually bind** the benchmark process
+- Calls `run_diskann_rs_split.py --runner host` and passes `--cpu-bind` so the binding is written into `cpu-bind.txt`
+
+What `run_web.sh` does:
+
+- Starts the standalone web UI in `DiskANN-playground/diskann-ann-bench/web/`
+- If `RUNS_DIR` is not set, it defaults to `DiskANN-playground/extend-rabitq/ann-harness/runs`
+- The UI shows `cpu-bind.txt` and the derived core count on the dataset/run pages
+
+### Remote mode (ssh + sync run folder back)
+
+If your **index build/search must run on a remote machine** (e.g. server with more cores/DRAM) but you still want the results to show up in the existing web UI locally, use `--runner remote`.
+
+Assumptions:
+
+- The remote machine has the same repo layout (or you can point to it explicitly):
+  - `<remote-workspace-root>/DiskANN-playground/`
+  - `<remote-workspace-root>/ann-benchmark-epeshared/`
+- The remote host can access the dataset path you provide (or use `--remote-copy-hdf5`).
+- The remote host has `cargo` available if you use `--remote-build-native`.
+
+Example:
+
+```bash
+cd ../../DiskANN-playground/diskann-ann-bench
+
+python run_diskann_rs_split.py --runner remote \
+  --hdf5 ../../tmp_sanity_small.hdf5 \
+  --metric l2 -k 10 --l-search 50 --reps 2 \
+  --remote-host myserver \
+  --remote-user ubuntu \
+  --ssh-opts "-i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
+  --remote-workspace-root /data/work/diskann-workspace \
+  --remote-inner-runner host \
+  --remote-build-native \
+  --remote-copy-hdf5
+```
+
+What happens:
+
+- Runs the split runner on the remote host (build + save index, then search).
+- Pulls the entire remote run folder back into your local `extend-rabitq/ann-harness/runs/<dataset>/<run-id>/` so the web UI can browse it.
 
 ## Useful commands
 

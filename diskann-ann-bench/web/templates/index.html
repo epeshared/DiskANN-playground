@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block body %}
+  <div class="panel">
+    <div class="h2">Datasets</div>
+    {% if datasets %}
+      <table class="table">
+        <thead><tr><th>dataset</th><th>runs</th></tr></thead>
+        <tbody>
+          {% for d in datasets %}
+            <tr>
+              <td><a href="/dataset/{{ d | urlencode }}">{{ d }}</a></td>
+              <td class="small">/dataset/{{ d }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div class="small">No datasets found under runs_dir.</div>
+    {% endif %}
+  </div>
+{% endblock %}

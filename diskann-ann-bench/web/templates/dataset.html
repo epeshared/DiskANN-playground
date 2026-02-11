@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block body %}
+  <div class="panel">
+    <div class="h2">Dataset: {{ dataset }}</div>
+
+    <form class="actions" method="get" action="/dataset/{{ dataset | urlencode }}">
+      <input class="input" type="text" name="q" value="{{ q or '' }}" placeholder="filter run id / mode" />
+      <input class="input" type="text" name="mode" value="{{ mode or default_mode }}" placeholder="mode (default ann_bench_diskann_rs)" />
+      <button class="btn" type="submit">Apply</button>
+      <a class="btn" href="/dataset/{{ dataset | urlencode }}">Reset</a>
+    </form>
+
+    <div class="small" style="margin-top:10px">Showing {{ runs|length }} run(s).</div>
+
+    <table class="table" style="margin-top:10px">
+      <thead><tr><th>run_id</th><th>mode</th><th>cpu_bind</th><th>artifacts</th></tr></thead>
+      <tbody>
+        {% for r in runs %}
+          <tr>
+            <td><a href="/run/{{ dataset | urlencode }}/{{ r.id | urlencode }}">{{ r.id }}</a></td>
+            <td><span class="badge {{ 'ok' if r.mode == default_mode else '' }}">{{ r.mode or '' }}</span></td>
+            <td class="small">{% if r.cpu_bind %}{{ r.cpu_bind }}{% if r.cpu_cores is not none %} ({{ r.cpu_cores }} cores){% endif %}{% endif %}</td>
+            <td class="small">
+              {% if r.has_summary %}summary.tsv{% endif %}
+              {% if r.has_details %} · details.md{% endif %}
+              {% if r.has_build %} · output.build.json{% endif %}
+              {% if r.has_search %} · output.search.json{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

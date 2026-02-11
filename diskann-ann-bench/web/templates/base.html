@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ title or "diskann-ann-bench" }}</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="h1"><a href="/">diskann-ann-bench</a></div>
+      <div class="small">runs_dir: {{ runs_dir }}</div>
+    </div>
+
+    {% if breadcrumbs %}
+      <div class="small" style="margin-bottom:10px">{{ breadcrumbs | safe }}</div>
+    {% endif %}
+
+    {% block body %}{% endblock %}
+
+    <div class="small" style="margin-top:20px">mode filter default: <span class="badge">ann_bench_diskann_rs</span></div>
+  </div>
+</body>
+</html>

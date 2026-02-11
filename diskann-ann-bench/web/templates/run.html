@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block body %}
+  <div class="grid">
+    <div class="panel">
+      <div class="h2">Run</div>
+      <div class="kv">
+        <div class="k">dataset</div><div><a href="/dataset/{{ dataset | urlencode }}">{{ dataset }}</a></div>
+        <div class="k">run_id</div><div>{{ run_id }}</div>
+        <div class="k">mode</div><div><span class="badge">{{ mode or '' }}</span></div>
+        <div class="k">cpu_bind</div><div>{% if cpu_bind %}{{ cpu_bind }}{% if cpu_cores is not none %} <span class="small">({{ cpu_cores }} cores)</span>{% endif %}{% endif %}</div>
+      </div>
+      <div class="actions" style="margin-top:12px">
+        <a class="btn" href="/api/file/{{ dataset | urlencode }}/{{ run_id | urlencode }}/outputs/summary.tsv">Download summary.tsv</a>
+        <a class="btn" href="/api/file/{{ dataset | urlencode }}/{{ run_id | urlencode }}/outputs/details.md">Download details.md</a>
+        <a class="btn" href="/api/file/{{ dataset | urlencode }}/{{ run_id | urlencode }}/outputs/output.build.json">Download build.json</a>
+        <a class="btn" href="/api/file/{{ dataset | urlencode }}/{{ run_id | urlencode }}/outputs/output.search.json">Download search.json</a>
+      </div>
+    </div>
+
+    {% if summary.headers %}
+    <div class="panel">
+      <div class="h2">summary.tsv</div>
+      <table class="table">
+        <thead>
+          <tr>
+            {% for h in summary.headers %}<th>{{ h }}</th>{% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in summary.rows %}
+            <tr>
+              {% for cell in row %}<td>{{ cell }}</td>{% endfor %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% if details_html %}
+    <div class="panel">
+      <div class="h2">details.md</div>
+      <div class="small">Rendered markdown (raw file is downloadable above).</div>
+      <div class="panel" style="margin-top:10px;background:#0a0f1f">
+        {{ details_html | safe }}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if build_json %}
+    <div class="panel">
+      <div class="h2">output.build.json</div>
+      <pre>{{ build_json }}</pre>
+    </div>
+    {% endif %}
+
+    {% if search_json %}
+    <div class="panel">
+      <div class="h2">output.search.json</div>
+      <pre>{{ search_json }}</pre>
+    </div>
+    {% endif %}
+
+  </div>
+{% endblock %}
