@@ -11,6 +11,7 @@
       <label class="small"><input type="radio" name="mode" value="b_over_a" {% if mode == 'b_over_a' %}checked{% endif %}/> B/A</label>
       <label class="small"><input type="radio" name="mode" value="a_over_b" {% if mode == 'a_over_b' %}checked{% endif %}/> A/B</label>
       <button class="btn" id="swapBtn" type="button">Swap A ↔ B</button>
+      <a class="btn" href="{{ download_href }}">下载比较结果 (XLSX)</a>
       <span class="small" style="margin-left:10px;">{{ delta_label }}</span>
     </div>
 
@@ -39,6 +40,117 @@
         <div class="small" style="margin-top:8px;">CPU bind: <code>{{ meta_b.cpu_bind if meta_b.cpu_bind else "-" }}</code></div>
       </div>
     </div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; gap:12px; align-items:baseline;">
+      <h4 style="margin:0">configs/*.json compare</h4>
+      <span class="small">(only shows diffs when both sides parse as JSON)</span>
+    </div>
+
+    {% if not config_compares or config_compares|length == 0 %}
+      <div class="small" style="margin-top:10px;">No config files found under <code>configs/</code> for either run.</div>
+    {% else %}
+      <div style="margin-top:10px;">
+        <table>
+          <thead>
+            <tr>
+              <th>file</th>
+              <th>A</th>
+              <th>B</th>
+              <th>diffs</th>
+              <th>details</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for c in config_compares %}
+              <tr>
+                <td><code>{{ c.name }}</code></td>
+                <td class="small">
+                  {% if c.present_a %}
+                    <a class="badge" href="{{ c.a_href }}">download</a>
+                    <span class="small">json={{ 'yes' if c.parse_a_ok else 'no' }}</span>
+                  {% else %}
+                    <span class="small">missing</span>
+                  {% endif %}
+                </td>
+                <td class="small">
+                  {% if c.present_b %}
+                    <a class="badge" href="{{ c.b_href }}">download</a>
+                    <span class="small">json={{ 'yes' if c.parse_b_ok else 'no' }}</span>
+                  {% else %}
+                    <span class="small">missing</span>
+                  {% endif %}
+                </td>
+                <td class="small">
+                  {% if c.parse_a_ok and c.parse_b_ok %}
+                    <span>{{ c.diff_count }}</span>
+                    {% if c.flatten_truncated %}<span class="badge">flatten-truncated</span>{% endif %}
+                    {% if c.diff_truncated %}<span class="badge">diff-truncated</span>{% endif %}
+                  {% else %}
+                    <span>-</span>
+                  {% endif %}
+                </td>
+                <td>
+                  <details>
+                    <summary class="small">view</summary>
+                    {% if c.parse_a_ok and c.parse_b_ok %}
+                      <div class="small" style="margin-top:8px;">Changed JSON paths (showing up to 200):</div>
+                      <table class="mini" style="margin-top:6px;">
+                        <thead>
+                          <tr>
+                            <th>path</th>
+                            <th>status</th>
+                            <th>A</th>
+                            <th>B</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {% for d in c.diffs %}
+                            <tr>
+                              <td><code>{{ d.path }}</code></td>
+                              <td class="small"><span class="badge">{{ d.status }}</span></td>
+                              <td><code title="{{ d.a_full }}">{{ d.a }}</code></td>
+                              <td><code title="{{ d.b_full }}">{{ d.b }}</code></td>
+                            </tr>
+                          {% endfor %}
+                        </tbody>
+                      </table>
+
+                      <details style="margin-top:10px;">
+                        <summary class="small">raw JSON preview</summary>
+                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px;">
+                          <div>
+                            <div class="small">A</div>
+                            <pre style="max-height:320px; overflow:auto; white-space:pre; padding:10px; background:#0f172a0a; border-radius:8px;">{{ c.raw_a if c.raw_a else '' }}</pre>
+                          </div>
+                          <div>
+                            <div class="small">B</div>
+                            <pre style="max-height:320px; overflow:auto; white-space:pre; padding:10px; background:#0f172a0a; border-radius:8px;">{{ c.raw_b if c.raw_b else '' }}</pre>
+                          </div>
+                        </div>
+                      </details>
+                    {% else %}
+                      <div class="small" style="margin-top:8px;">JSON diff unavailable (missing file or parse failed). Raw previews:</div>
+                      <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px;">
+                        <div>
+                          <div class="small">A</div>
+                          <pre style="max-height:320px; overflow:auto; white-space:pre; padding:10px; background:#0f172a0a; border-radius:8px;">{{ c.raw_a if c.raw_a else '' }}</pre>
+                        </div>
+                        <div>
+                          <div class="small">B</div>
+                          <pre style="max-height:320px; overflow:auto; white-space:pre; padding:10px; background:#0f172a0a; border-radius:8px;">{{ c.raw_b if c.raw_b else '' }}</pre>
+                        </div>
+                      </div>
+                    {% endif %}
+                  </details>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
   </div>
 
   <div class="card">

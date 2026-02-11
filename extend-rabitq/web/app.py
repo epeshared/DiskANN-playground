@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import csv
 import html
+import io
+import json
 import os
 import urllib.parse
 from dataclasses import dataclass
@@ -12,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.requests import Request
@@ -264,6 +266,340 @@ def _index_rows(rows: list[dict[str, str]], key_fields: list[str]) -> dict[tuple
     return out
 
 
+def _list_config_json_files(run_dir: Path) -> list[str]:
+    cfg_dir = run_dir / "configs"
+    if not cfg_dir.is_dir():
+        return []
+    out: list[str] = []
+    for child in cfg_dir.iterdir():
+        if child.is_file() and child.suffix.lower() == ".json":
+            out.append(child.name)
+    out.sort()
+    return out
+
+
+def _read_json_if_exists(path: Path, *, max_bytes: int = 2_000_000) -> Any | None:
+    text = _read_text_if_exists(path, max_bytes=max_bytes)
+    if text is None:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        return None
+
+
+def _flatten_json(
+    obj: Any,
+    *,
+    max_items: int = 5000,
+) -> tuple[dict[str, str], bool]:
+    # Returns (flat_map, truncated)
+    out: dict[str, str] = {}
+    truncated = False
+
+    def add(path: str, value: Any):
+        nonlocal truncated
+        if truncated:
+            return
+        if len(out) >= max_items:
+            truncated = True
+            return
+        if value is None or isinstance(value, (str, int, float, bool)):
+            out[path] = "" if value is None else str(value)
+        else:
+            # Fallback: stable JSON representation for non-primitive leaf.
+            try:
+                out[path] = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            except Exception:
+                out[path] = str(value)
+
+    def walk(current: Any, prefix: str):
+        nonlocal truncated
+        if truncated:
+            return
+        if current is None or isinstance(current, (str, int, float, bool)):
+            add(prefix or "$", current)
+            return
+        if isinstance(current, dict):
+            if not current:
+                add(prefix or "$", {})
+                return
+            for k in sorted(current.keys(), key=lambda x: str(x)):
+                v = current.get(k)
+                key = str(k)
+                next_prefix = f"{prefix}.{key}" if prefix else key
+                walk(v, next_prefix)
+            return
+        if isinstance(current, list):
+            if not current:
+                add(prefix or "$", [])
+                return
+            for i, v in enumerate(current):
+                next_prefix = f"{prefix}[{i}]" if prefix else f"[{i}]"
+                walk(v, next_prefix)
+            return
+
+        add(prefix or "$", current)
+
+    walk(obj, "")
+    return (out, truncated)
+
+
+def _diff_flat_maps(
+    a_map: dict[str, str],
+    b_map: dict[str, str],
+    *,
+    max_rows: int = 200,
+) -> tuple[list[dict[str, str]], int, bool]:
+    keys = sorted(set(a_map.keys()) | set(b_map.keys()))
+    rows: list[dict[str, str]] = []
+    diff_count = 0
+    truncated = False
+    for k in keys:
+        av = a_map.get(k, "")
+        bv = b_map.get(k, "")
+        if av == bv:
+            continue
+        diff_count += 1
+        if len(rows) >= max_rows:
+            truncated = True
+            continue
+        rows.append({"path": k, "a": av, "b": bv})
+    return (rows, diff_count, truncated)
+
+
+def _truncate_str(s: str, *, max_len: int = 200) -> str:
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 1] + "…"
+
+
+def _diff_flat_maps_rich(
+    a_map: dict[str, str],
+    b_map: dict[str, str],
+    *,
+    max_rows: int = 200,
+    max_value_len: int = 200,
+) -> tuple[list[dict[str, str]], int, bool]:
+    keys = sorted(set(a_map.keys()) | set(b_map.keys()))
+    rows: list[dict[str, str]] = []
+    diff_count = 0
+    truncated = False
+    for k in keys:
+        a_present = k in a_map
+        b_present = k in b_map
+        av_full = a_map.get(k, "")
+        bv_full = b_map.get(k, "")
+        if a_present and b_present and av_full == bv_full:
+            continue
+        if not a_present and not b_present:
+            continue
+
+        if not a_present and b_present:
+            status = "added"
+        elif a_present and not b_present:
+            status = "removed"
+        else:
+            status = "changed"
+
+        diff_count += 1
+        if len(rows) >= max_rows:
+            truncated = True
+            continue
+        rows.append(
+            {
+                "path": k,
+                "status": status,
+                "a": _truncate_str(av_full, max_len=max_value_len),
+                "b": _truncate_str(bv_full, max_len=max_value_len),
+                "a_full": av_full,
+                "b_full": bv_full,
+            }
+        )
+    return (rows, diff_count, truncated)
+
+
+def _parse_lscpu_kv(server_info: str | None) -> dict[str, str]:
+    if not server_info:
+        return {}
+    lines = server_info.splitlines()
+    try:
+        i = lines.index("lscpu:")
+    except ValueError:
+        return {}
+    out: dict[str, str] = {}
+    for line in lines[i + 1 :]:
+        if not line.strip():
+            continue
+        # lscpu output is generally "Key:   Value".
+        if ":" not in line:
+            continue
+        k, v = line.split(":", 1)
+        k = k.strip()
+        v = v.strip()
+        if not k:
+            continue
+        if k not in out:
+            out[k] = v
+    return out
+
+
+def _parse_details_job_configs(details_md: str | None) -> dict[str, dict[str, str]]:
+    # Parse outputs/details.md and extract shallow (non-nested) job config keys.
+    if not details_md:
+        return {}
+    jobs: dict[str, dict[str, str]] = {}
+    current_job: str | None = None
+    for raw in details_md.splitlines():
+        line = raw.rstrip("\n")
+        if line.startswith("## Job ") and ":" in line:
+            # Example: "## Job 1: async-index-build-pq"
+            current_job = line.split(":", 1)[1].strip() or None
+            if current_job and current_job not in jobs:
+                jobs[current_job] = {}
+            continue
+        if not current_job:
+            continue
+        # Only shallow bullets (no leading spaces)
+        if line.startswith("- ") and not line.startswith("  "):
+            # Example: "- pq_chunks: 64"; ignore nested section markers like "- build:".
+            body = line[2:]
+            if ":" not in body:
+                continue
+            k, v = body.split(":", 1)
+            k = k.strip()
+            v = v.strip()
+            if not k:
+                continue
+            if not v:
+                continue
+            jobs[current_job][k] = v
+    return jobs
+
+
+def _try_build_xlsx_compare(
+    *,
+    dataset: str,
+    a: str,
+    b: str,
+    mode: str,
+    delta_label: str,
+    meta_a: dict[str, Any],
+    meta_b: dict[str, Any],
+    key_fields: list[str],
+    metrics: list[str],
+    rows: list[dict[str, Any]],
+    run_a_dir: Path,
+    run_b_dir: Path,
+) -> bytes:
+    try:
+        from openpyxl import Workbook  # type: ignore[import-not-found]
+        from openpyxl.styles import Alignment, Font  # type: ignore[import-not-found]
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(
+            "Missing dependency 'openpyxl'. Install with: conda install -n diskann-rs -c conda-forge openpyxl"
+        ) from e
+
+    wb = Workbook()
+
+    # Sheet 1: CPU info
+    ws = wb.active
+    ws.title = "CPUInfo"
+    ws.append(["field", "A", "B"])
+    ws["A1"].font = ws["B1"].font = ws["C1"].font = Font(bold=True)
+    ws.freeze_panes = "A2"
+
+    def add(field: str, va: Any, vb: Any):
+        ws.append([field, "" if va is None else str(va), "" if vb is None else str(vb)])
+
+    add("dataset", dataset, dataset)
+    add("run_id", a, b)
+    add("run_path", meta_a.get("run_path"), meta_b.get("run_path"))
+    add("cpu-bind.txt", "yes" if meta_a.get("has_cpu_bind_file") else "no", "yes" if meta_b.get("has_cpu_bind_file") else "no")
+    add("cpu_cores", meta_a.get("cpu_cores"), meta_b.get("cpu_cores"))
+    add("cpu_model", meta_a.get("cpu_model"), meta_b.get("cpu_model"))
+    add("cpu_bind", meta_a.get("cpu_bind"), meta_b.get("cpu_bind"))
+
+    lscpu_a = _parse_lscpu_kv(meta_a.get("server_info"))
+    lscpu_b = _parse_lscpu_kv(meta_b.get("server_info"))
+    important = [
+        "CPU(s)",
+        "On-line CPU(s) list",
+        "Thread(s) per core",
+        "Core(s) per socket",
+        "Socket(s)",
+        "NUMA node(s)",
+        "NUMA node0 CPU(s)",
+        "NUMA node1 CPU(s)",
+    ]
+    for k in important:
+        if k in lscpu_a or k in lscpu_b:
+            add(f"lscpu.{k}", lscpu_a.get(k), lscpu_b.get(k))
+
+    ws.column_dimensions["A"].width = 28
+    ws.column_dimensions["B"].width = 60
+    ws.column_dimensions["C"].width = 60
+
+    # Sheet 2: summary.tsv compare (flat, wide)
+    ws2 = wb.create_sheet("SummaryCompare")
+    ws2.append(["dataset", dataset])
+    ws2.append(["A", a, "B", b, "mode", mode, "delta", delta_label])
+    ws2.append([])
+    header = list(key_fields)
+    for m in metrics:
+        header.extend([f"{m} (A)", f"{m} (B)", f"{m} Δ%"])
+    ws2.append(header)
+    for cell in ws2[4]:
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+    ws2.freeze_panes = "A5"
+
+    for r in rows:
+        out_row: list[Any] = []
+        for k in key_fields:
+            out_row.append(r.get(k, ""))
+        metric_list = r.get("metrics") or []
+        by_name = {m["name"]: m for m in metric_list if isinstance(m, dict) and "name" in m}
+        for m in metrics:
+            mr = by_name.get(m, {})
+            out_row.extend([mr.get("a", "-"), mr.get("b", "-"), mr.get("ratio_pct", "-")])
+        ws2.append(out_row)
+
+    # Sheet 3: details.md job config compare
+    ws3 = wb.create_sheet("JobConfigCompare")
+    ws3.append(["job", "key", "A", "B", "same"])
+    for cell in ws3[1]:
+        cell.font = Font(bold=True)
+    ws3.freeze_panes = "A2"
+
+    details_a = _read_text_if_exists(run_a_dir / "outputs" / "details.md", max_bytes=2_000_000)
+    details_b = _read_text_if_exists(run_b_dir / "outputs" / "details.md", max_bytes=2_000_000)
+    jobs_a = _parse_details_job_configs(details_a)
+    jobs_b = _parse_details_job_configs(details_b)
+    all_jobs = sorted(set(jobs_a.keys()) | set(jobs_b.keys()))
+    for job in all_jobs:
+        ka = jobs_a.get(job, {})
+        kb = jobs_b.get(job, {})
+        keys = sorted(set(ka.keys()) | set(kb.keys()))
+        if not keys:
+            ws3.append([job, "<no shallow config parsed>", "", "", ""])
+            continue
+        for k in keys:
+            va = ka.get(k, "")
+            vb = kb.get(k, "")
+            ws3.append([job, k, va, vb, "yes" if (va == vb and va != "") else ("no" if (va or vb) else "")])
+
+    # Wrap text for long cells.
+    for w in (ws, ws2, ws3):
+        for row in w.iter_rows():
+            for cell in row:
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def _breadcrumbs(*items: tuple[str, str]) -> str:
     # items: (label, href)
     parts: list[str] = []
@@ -475,6 +811,52 @@ def create_app(settings: Settings) -> FastAPI:
         meta_a = _run_meta(run_a_dir)
         meta_b = _run_meta(run_b_dir)
 
+        # configs/*.json compare (optional)
+        cfg_names_a = set(_list_config_json_files(run_a_dir))
+        cfg_names_b = set(_list_config_json_files(run_b_dir))
+        cfg_names = sorted(cfg_names_a | cfg_names_b)
+        config_compares: list[dict[str, Any]] = []
+        for name in cfg_names:
+            pa = (run_a_dir / "configs" / name)
+            pb = (run_b_dir / "configs" / name)
+            present_a = pa.is_file()
+            present_b = pb.is_file()
+            raw_a = _read_text_if_exists(pa, max_bytes=400_000) if present_a else None
+            raw_b = _read_text_if_exists(pb, max_bytes=400_000) if present_b else None
+
+            ja = _read_json_if_exists(pa) if present_a else None
+            jb = _read_json_if_exists(pb) if present_b else None
+            parse_a_ok = ja is not None
+            parse_b_ok = jb is not None
+
+            diffs: list[dict[str, str]] = []
+            diff_count = 0
+            diff_truncated = False
+            flatten_truncated = False
+            if parse_a_ok and parse_b_ok:
+                flat_a, trunc_a = _flatten_json(ja)
+                flat_b, trunc_b = _flatten_json(jb)
+                flatten_truncated = trunc_a or trunc_b
+                diffs, diff_count, diff_truncated = _diff_flat_maps_rich(flat_a, flat_b)
+
+            config_compares.append(
+                {
+                    "name": name,
+                    "present_a": present_a,
+                    "present_b": present_b,
+                    "a_href": f"/file/{urllib.parse.quote(dataset)}/{urllib.parse.quote(a)}/configs/{urllib.parse.quote(name)}" if present_a else None,
+                    "b_href": f"/file/{urllib.parse.quote(dataset)}/{urllib.parse.quote(b)}/configs/{urllib.parse.quote(name)}" if present_b else None,
+                    "parse_a_ok": parse_a_ok,
+                    "parse_b_ok": parse_b_ok,
+                    "diffs": diffs,
+                    "diff_count": diff_count,
+                    "diff_truncated": diff_truncated,
+                    "flatten_truncated": flatten_truncated,
+                    "raw_a": raw_a,
+                    "raw_b": raw_b,
+                }
+            )
+
         headers_a, rows_a = _read_tsv(run_a_dir / "outputs" / "summary.tsv")
         headers_b, rows_b = _read_tsv(run_b_dir / "outputs" / "summary.tsv")
 
@@ -554,6 +936,8 @@ def create_app(settings: Settings) -> FastAPI:
                 "meta_b": meta_b,
                 "mode": mode,
                 "delta_label": delta_label,
+                "download_href": f"/compare/{dataset}/download?a={urllib.parse.quote(a)}&b={urllib.parse.quote(b)}&mode={urllib.parse.quote(mode)}",
+                "config_compares": config_compares,
                 "key_fields": key_fields,
                 "metrics": metrics,
                 "rows": compare_rows,
@@ -562,6 +946,109 @@ def create_app(settings: Settings) -> FastAPI:
                 "breadcrumbs": bc,
             },
         )
+
+    @app.get("/compare/{dataset}/download")
+    def compare_download(dataset: str, request: Request):
+        a = request.query_params.get("a")
+        b = request.query_params.get("b")
+        mode = (request.query_params.get("mode") or "b_over_a").strip().lower()
+        if mode in {"ba", "b/a", "b_over_a"}:
+            mode = "b_over_a"
+        elif mode in {"ab", "a/b", "a_over_b"}:
+            mode = "a_over_b"
+        else:
+            mode = "b_over_a"
+
+        delta_label = "Δ = ((B/A) - 1) × 100%" if mode == "b_over_a" else "Δ = ((A/B) - 1) × 100%"
+        if not a or not b:
+            raise HTTPException(status_code=400, detail="missing query params: a, b")
+        if a == b:
+            raise HTTPException(status_code=400, detail="a and b must be different")
+
+        dataset_dir = _safe_join(settings.runs_dir, dataset)
+        run_a_dir = _safe_join(dataset_dir, a)
+        run_b_dir = _safe_join(dataset_dir, b)
+        if not run_a_dir.is_dir() or not run_b_dir.is_dir():
+            raise HTTPException(status_code=404, detail="run not found")
+
+        meta_a = _run_meta(run_a_dir)
+        meta_b = _run_meta(run_b_dir)
+
+        headers_a, rows_a = _read_tsv(run_a_dir / "outputs" / "summary.tsv")
+        headers_b, rows_b = _read_tsv(run_b_dir / "outputs" / "summary.tsv")
+        common_headers = [h for h in headers_a if h in set(headers_b)]
+        key_fields = [f for f in ["job", "detail", "tasks", "L", "N"] if f in common_headers]
+        metric_fields = [h for h in common_headers if h not in key_fields]
+        preferred_metrics = [
+            "recall(avg)",
+            "QPS(mean)",
+            "lat_mean_us(mean)",
+            "lat_p99_us(mean)",
+        ]
+        metrics = [m for m in preferred_metrics if m in metric_fields]
+        metrics.extend([m for m in metric_fields if m not in set(metrics)])
+
+        idx_a = _index_rows(rows_a, key_fields)
+        idx_b = _index_rows(rows_b, key_fields)
+        all_keys = sorted(set(idx_a.keys()) | set(idx_b.keys()))
+
+        def sort_key(k: tuple[str, ...]) -> tuple[Any, ...]:
+            parts: list[Any] = []
+            for name, v in zip(key_fields, k):
+                if name in {"tasks", "L", "N"}:
+                    parts.append(_to_int_maybe(v) if _to_int_maybe(v) is not None else v)
+                else:
+                    parts.append(v)
+            return tuple(parts)
+
+        all_keys.sort(key=sort_key)
+
+        compare_rows: list[dict[str, Any]] = []
+        for k in all_keys:
+            ra = idx_a.get(k)
+            rb = idx_b.get(k)
+            out: dict[str, Any] = {}
+            for i, f in enumerate(key_fields):
+                out[f] = k[i] if i < len(k) else ""
+            out["present_a"] = ra is not None
+            out["present_b"] = rb is not None
+
+            metric_rows: list[dict[str, Any]] = []
+            for m in metrics:
+                va = (ra.get(m) if ra else None)
+                vb = (rb.get(m) if rb else None)
+                da = _to_float_maybe(va)
+                db = _to_float_maybe(vb)
+                delta = _fmt_ratio_pct(db, da) if mode == "b_over_a" else _fmt_ratio_pct(da, db)
+                metric_rows.append(
+                    {
+                        "name": m,
+                        "a": (va if va is not None and str(va).strip() else "-"),
+                        "b": (vb if vb is not None and str(vb).strip() else "-"),
+                        "ratio_pct": delta,
+                    }
+                )
+            out["metrics"] = metric_rows
+            compare_rows.append(out)
+
+        xlsx_bytes = _try_build_xlsx_compare(
+            dataset=dataset,
+            a=a,
+            b=b,
+            mode=mode,
+            delta_label=delta_label,
+            meta_a=meta_a,
+            meta_b=meta_b,
+            key_fields=key_fields,
+            metrics=metrics,
+            rows=compare_rows,
+            run_a_dir=run_a_dir,
+            run_b_dir=run_b_dir,
+        )
+
+        filename = f"compare_{dataset}_{a}_vs_{b}_{mode}.xlsx"
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        return StreamingResponse(io.BytesIO(xlsx_bytes), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers)
 
     @app.get("/file/{dataset}/{run_id}/{rel_path:path}")
     def get_file(dataset: str, run_id: str, rel_path: str):

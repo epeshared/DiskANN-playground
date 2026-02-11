@@ -8,7 +8,7 @@ A small web server to browse benchmark runs under:
 Recommended (use the existing conda env `diskann-rs`):
 
 ```bash
-conda install -n diskann-rs -y -c conda-forge fastapi uvicorn jinja2 markdown-it-py
+conda install -n diskann-rs -y -c conda-forge fastapi uvicorn jinja2 markdown-it-py openpyxl
 ```
 
 Alternative (pip, but still inside your chosen Python env):
