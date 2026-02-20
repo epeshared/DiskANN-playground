@@ -5,25 +5,132 @@
 
     <form class="actions" method="get" action="/dataset/{{ dataset | urlencode }}">
       <input class="input" type="text" name="q" value="{{ q or '' }}" placeholder="filter run id / mode" />
-      <input class="input" type="text" name="mode" value="{{ mode or default_mode }}" placeholder="mode (default ann_bench_diskann_rs)" />
+      <input class="input" type="text" name="mode" value="{{ mode or default_mode }}" placeholder="cpu mode (default ann_bench_diskann_rs)" />
+      <input class="input" type="text" name="cpu" value="{{ cpu_filter or '' }}" placeholder="cpu model (e.g. Xeon)" />
+      <input class="input" type="text" name="cpu_bind" value="{{ cpu_bind_filter or '' }}" placeholder="cpu bind (e.g. 0-16)" />
       <button class="btn" type="submit">Apply</button>
       <a class="btn" href="/dataset/{{ dataset | urlencode }}">Reset</a>
     </form>
 
+    <form id="delete-runs-form" class="actions" method="post" action="/dataset/{{ dataset | urlencode }}/delete" style="margin-top:8px">
+      <input type="hidden" name="q" value="{{ q or '' }}" />
+      <input type="hidden" name="mode" value="{{ mode or default_mode }}" />
+      <input type="hidden" name="cpu" value="{{ cpu_filter or '' }}" />
+      <input type="hidden" name="cpu_bind" value="{{ cpu_bind_filter or '' }}" />
+      <button class="btn" type="submit">Delete selected runs</button>
+    </form>
+
+    {% if deleted_count and deleted_count > 0 %}
+      <div class="small" style="margin-top:8px">Deleted {{ deleted_count }} run(s).</div>
+    {% endif %}
+
     <div class="small" style="margin-top:10px">Showing {{ runs|length }} run(s).</div>
 
-    <table class="table" style="margin-top:10px">
-      <thead><tr><th>run_id</th><th>mode</th><th>cpu</th><th>cpu_bind</th></tr></thead>
+    <table id="runs-table" class="table" style="margin-top:10px">
+      <thead>
+        <tr>
+          <th><input id="select-all-runs" type="checkbox" title="select all" /></th>
+          <th data-sort="string" style="cursor:pointer">run_id <span class="sort-arrow"></span></th>
+          <th data-sort="string" style="cursor:pointer">mode <span class="sort-arrow"></span></th>
+          <th data-sort="string" style="cursor:pointer">cpu <span class="sort-arrow"></span></th>
+          <th data-sort="string" style="cursor:pointer">cpu_bind <span class="sort-arrow"></span></th>
+        </tr>
+      </thead>
       <tbody>
         {% for r in runs %}
           <tr>
+            <td><input form="delete-runs-form" type="checkbox" name="run_ids" value="{{ r.id }}" /></td>
             <td><a href="/run/{{ dataset | urlencode }}/{{ r.id | urlencode }}">{{ r.id }}</a></td>
             <td><span class="badge {{ 'ok' if r.mode == default_mode else '' }}">{{ r.mode or '' }}</span></td>
             <td class="small">{{ r.cpu_model or '' }}</td>
-            <td class="small">{% if r.cpu_bind %}{{ r.cpu_bind }}{% if r.cpu_cores is not none %} ({{ r.cpu_cores }} cores){% endif %}{% endif %}</td>
+            <td class="small">{{ r.cpu_bind or '' }}</td>
           </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
+
+  <script>
+    (function () {
+      const table = document.getElementById('runs-table');
+      if (!table) return;
+
+      const tbody = table.querySelector('tbody');
+      const selectAll = document.getElementById('select-all-runs');
+      const deleteForm = document.getElementById('delete-runs-form');
+      const rowChecks = () => Array.from(table.querySelectorAll('tbody input[type="checkbox"][name="run_ids"]'));
+
+      if (selectAll) {
+        selectAll.addEventListener('change', function () {
+          rowChecks().forEach((cb) => {
+            cb.checked = !!selectAll.checked;
+          });
+        });
+      }
+
+      rowChecks().forEach((cb) => {
+        cb.addEventListener('change', function () {
+          const all = rowChecks();
+          const checked = all.filter((x) => x.checked).length;
+          if (selectAll) {
+            selectAll.checked = all.length > 0 && checked === all.length;
+            selectAll.indeterminate = checked > 0 && checked < all.length;
+          }
+        });
+      });
+
+      if (deleteForm) {
+        deleteForm.addEventListener('submit', function (e) {
+          const selected = rowChecks().filter((cb) => cb.checked).length;
+          if (selected === 0) {
+            e.preventDefault();
+            window.alert('Please select at least one run to delete.');
+            return;
+          }
+          if (!window.confirm('Delete selected runs? This cannot be undone.')) {
+            e.preventDefault();
+          }
+        });
+      }
+
+      const sortState = { index: -1, asc: true };
+      const headers = Array.from(table.querySelectorAll('thead th[data-sort]'));
+
+      function cellText(tr, i) {
+        const td = tr.children[i];
+        return td ? (td.innerText || td.textContent || '').trim() : '';
+      }
+
+      function sortBy(index) {
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        const asc = sortState.index === index ? !sortState.asc : true;
+        sortState.index = index;
+        sortState.asc = asc;
+
+        rows.sort((a, b) => {
+          const av = cellText(a, index).toLowerCase();
+          const bv = cellText(b, index).toLowerCase();
+          if (av < bv) return asc ? -1 : 1;
+          if (av > bv) return asc ? 1 : -1;
+          return 0;
+        });
+
+        rows.forEach((r) => tbody.appendChild(r));
+
+        headers.forEach((th) => {
+          const arrow = th.querySelector('.sort-arrow');
+          if (!arrow) return;
+          const thIndex = Array.from(th.parentElement.children).indexOf(th);
+          arrow.textContent = thIndex === index ? (asc ? '↑' : '↓') : '';
+        });
+      }
+
+      headers.forEach((th) => {
+        const index = Array.from(th.parentElement.children).indexOf(th);
+        th.addEventListener('click', function () {
+          sortBy(index);
+        });
+      });
+    })();
+  </script>
 {% endblock %}

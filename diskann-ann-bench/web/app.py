@@ -8,6 +8,7 @@ import json
 import os
 import re
 import math
+import shutil
 import subprocess
 import urllib.parse
 from dataclasses import dataclass
@@ -16,7 +17,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.requests import Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markdown_it import MarkdownIt
@@ -345,6 +346,17 @@ def create_app(settings: Settings) -> FastAPI:
         mode = request.query_params.get("mode")
         mode = (mode.strip() if isinstance(mode, str) else "")
         mode_norm = (mode.lower().strip() if mode else "") or default_mode
+        cpu_filter = request.query_params.get("cpu")
+        cpu_filter = (cpu_filter.strip() if isinstance(cpu_filter, str) else "")
+        cpu_filter_norm = cpu_filter.lower()
+        cpu_bind_filter = request.query_params.get("cpu_bind")
+        cpu_bind_filter = (cpu_bind_filter.strip() if isinstance(cpu_bind_filter, str) else "")
+        cpu_bind_filter_norm = cpu_bind_filter.lower()
+        deleted = request.query_params.get("deleted")
+        try:
+            deleted_count = int(deleted) if deleted is not None else 0
+        except Exception:
+            deleted_count = 0
 
         runs = []
         for run_id in run_ids:
@@ -364,6 +376,10 @@ def create_app(settings: Settings) -> FastAPI:
             cpu_cores = len(_parse_cpu_bind_to_set(cpu_bind or '')) if cpu_bind else None
 
             if mode_norm and (run_mode or "").strip().lower() != mode_norm:
+                continue
+            if cpu_filter_norm and cpu_filter_norm not in (cpu_model or "").lower():
+                continue
+            if cpu_bind_filter_norm and cpu_bind_filter_norm not in (cpu_bind or "").lower():
                 continue
 
             if q:
@@ -398,11 +414,51 @@ def create_app(settings: Settings) -> FastAPI:
                 "runs": runs,
                 "q": q or "",
                 "mode": mode,
+                "cpu_filter": cpu_filter,
+                "cpu_bind_filter": cpu_bind_filter,
                 "default_mode": default_mode,
+                "deleted_count": deleted_count,
                 "runs_dir": str(settings.runs_dir),
                 "breadcrumbs": _breadcrumbs(("datasets", "/"), (dataset, f"/dataset/{urllib.parse.quote(dataset, safe='')}")),
             },
         )
+
+    @app.post("/dataset/{dataset}/delete")
+    async def dataset_delete_runs(dataset: str, request: Request):
+        dataset_dir = _safe_join(settings.runs_dir, dataset)
+        form = await request.form()
+
+        selected: list[str] = []
+        if hasattr(form, "getlist"):
+            selected = [str(x).strip() for x in form.getlist("run_ids") if str(x).strip()]
+
+        q = (str(form.get("q") or "")).strip()
+        mode = (str(form.get("mode") or "")).strip()
+        cpu_filter = (str(form.get("cpu") or "")).strip()
+        cpu_bind_filter = (str(form.get("cpu_bind") or "")).strip()
+
+        deleted_count = 0
+        for run_id in selected:
+            try:
+                run_dir = _safe_join(dataset_dir, run_id)
+            except HTTPException:
+                continue
+            if run_dir.is_dir():
+                shutil.rmtree(run_dir)
+                deleted_count += 1
+
+        base = f"/dataset/{urllib.parse.quote(dataset, safe='')}"
+        params: dict[str, str] = {"deleted": str(deleted_count)}
+        if q:
+            params["q"] = q
+        if mode:
+            params["mode"] = mode
+        if cpu_filter:
+            params["cpu"] = cpu_filter
+        if cpu_bind_filter:
+            params["cpu_bind"] = cpu_bind_filter
+        url = f"{base}?{urllib.parse.urlencode(params)}"
+        return RedirectResponse(url=url, status_code=303)
 
     @app.get("/run/{dataset}/{run_id}", response_class=HTMLResponse)
     def run_page(dataset: str, run_id: str, request: Request):

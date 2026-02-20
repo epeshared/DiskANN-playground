@@ -457,7 +457,7 @@ else
 fi
 
 # Compute CPU bind string and clamp if needed.
-CPU_BIND="0-16"
+CPU_BIND="0-31"
 if command -v nproc >/dev/null 2>&1; then
   NPROC="$(nproc)"
   if [[ "$NPROC" -lt 17 ]]; then
@@ -577,6 +577,16 @@ SPHERICAL_FIELDS = [
   "spherical_seed",
 ]
 
+PERF_2DP_FIELDS = {
+  "recall_at_k",
+  "qps_mean",
+  "lat_mean_us",
+  "lat_p50_us",
+  "lat_p95_us",
+  "lat_p99_us",
+  "load_index_s",
+}
+
 
 def _as_str(v):
   if v is None:
@@ -592,6 +602,16 @@ def _get(search_obj, build_obj, key: str):
   if isinstance(build_obj, dict) and key in build_obj:
     return build_obj.get(key)
   return None
+
+
+def _fmt_2dp(v: str) -> str:
+  s = (v or "").strip()
+  if not s:
+    return ""
+  try:
+    return f"{float(s):.2f}"
+  except Exception:
+    return s
 
 
 _re_chunks = re.compile(r"chunks(?P<chunks>[0-9]+)")
@@ -741,7 +761,11 @@ def _write_csv(path: Path, rows, fieldnames):
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         for r in rows:
-            w.writerow(r)
+      row = dict(r)
+      for key in PERF_2DP_FIELDS:
+        if key in row:
+          row[key] = _fmt_2dp(str(row.get(key, "")))
+      w.writerow(row)
 
 
 _write_csv(out_dir / "summary.pq.csv", csv_rows_pq, PQ_FIELDS)
