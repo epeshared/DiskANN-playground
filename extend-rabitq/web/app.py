@@ -258,12 +258,42 @@ def _run_meta(run_dir: Path) -> dict[str, Any]:
     }
 
 
+def _normalize_detail_for_key(detail: str) -> str:
+    # The summary.tsv `detail` field is a human-readable descriptor that sometimes
+    # includes a redundant `layouts=[...]` list alongside `layout=...`. Different
+    # harness versions can format this differently (single-element vs full list),
+    # which breaks exact-key matching. For matching only, drop `layouts=...` when
+    # `layout=...` is present.
+    s = (detail or "").strip()
+    if not s:
+        return ""
+    parts = [p.strip() for p in s.split(";") if p.strip()]
+    has_layout = any(p.startswith("layout=") for p in parts)
+    if not has_layout:
+        return s
+    filtered = [p for p in parts if not p.startswith("layouts=")]
+    return "; ".join(filtered) if filtered else s
+
+
 def _index_rows(rows: list[dict[str, str]], key_fields: list[str]) -> dict[tuple[str, ...], dict[str, str]]:
     out: dict[tuple[str, ...], dict[str, str]] = {}
     for r in rows:
-        k = tuple((r.get(f) or "").strip() for f in key_fields)
+        parts: list[str] = []
+        for f in key_fields:
+            v = (r.get(f) or "").strip()
+            if f == "detail":
+                v = _normalize_detail_for_key(v)
+            parts.append(v)
+        k = tuple(parts)
         out[k] = r
     return out
+
+
+def _read_mode(run_dir: Path) -> str | None:
+    mode = _read_text_if_exists(run_dir / "mode.txt")
+    if isinstance(mode, str):
+        mode = mode.strip()
+    return mode or None
 
 
 def _list_config_json_files(run_dir: Path) -> list[str]:
@@ -483,6 +513,7 @@ def _try_build_xlsx_compare(
     a: str,
     b: str,
     mode: str,
+    cfg_mode: str,
     delta_label: str,
     meta_a: dict[str, Any],
     meta_b: dict[str, Any],
@@ -589,8 +620,106 @@ def _try_build_xlsx_compare(
             vb = kb.get(k, "")
             ws3.append([job, k, va, vb, "yes" if (va == vb and va != "") else ("no" if (va or vb) else "")])
 
+    # Sheet 4: configs/*.json file-level compare
+    cfg_names_a = set(_list_config_json_files(run_a_dir))
+    cfg_names_b = set(_list_config_json_files(run_b_dir))
+    cfg_common = cfg_names_a & cfg_names_b
+    cfg_only_a = cfg_names_a - cfg_names_b
+    cfg_only_b = cfg_names_b - cfg_names_a
+    cfg_mode_norm = (cfg_mode or "all").strip().lower()
+    if cfg_mode_norm not in {"all", "common"}:
+        cfg_mode_norm = "all"
+    cfg_names = sorted(cfg_names_a | cfg_names_b) if cfg_mode_norm == "all" else sorted(cfg_common)
+
+    ws4 = wb.create_sheet("ConfigFiles")
+    ws4.append(["dataset", dataset])
+    ws4.append(["A", a, "B", b, "cfg", cfg_mode_norm])
+    ws4.append(["common", len(cfg_common), "onlyA", len(cfg_only_a), "onlyB", len(cfg_only_b), "all", len(cfg_names_a | cfg_names_b)])
+    ws4.append([])
+    ws4.append(["file", "present_A", "present_B", "json_A", "json_B", "diff_count", "flatten_truncated", "diff_truncated"])
+    for cell in ws4[5]:
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+    ws4.freeze_panes = "A6"
+
+    # Sheet 5: configs/*.json path-level diffs (only when both sides parse)
+    ws5 = wb.create_sheet("ConfigDiffs")
+    ws5.append(["dataset", dataset])
+    ws5.append(["A", a, "B", b, "cfg", cfg_mode_norm])
+    ws5.append([])
+    ws5.append(["file", "path", "status", "A", "B", "A_full", "B_full"])
+    for cell in ws5[4]:
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+    ws5.freeze_panes = "A5"
+
+    def xlsx_cell(v: Any, *, max_len: int = 4000) -> str:
+        if v is None:
+            return ""
+        s = str(v)
+        if len(s) <= max_len:
+            return s
+        return s[: max_len - 1] + "…"
+
+    max_diff_rows_total = 20_000
+    diff_rows_written = 0
+    for name in cfg_names:
+        pa = (run_a_dir / "configs" / name)
+        pb = (run_b_dir / "configs" / name)
+        present_a = pa.is_file()
+        present_b = pb.is_file()
+
+        ja = _read_json_if_exists(pa) if present_a else None
+        jb = _read_json_if_exists(pb) if present_b else None
+        parse_a_ok = ja is not None
+        parse_b_ok = jb is not None
+
+        diff_count = ""
+        flatten_truncated = ""
+        diff_truncated = ""
+        if parse_a_ok and parse_b_ok:
+            flat_a, trunc_a = _flatten_json(ja)
+            flat_b, trunc_b = _flatten_json(jb)
+            diffs, dcount, dtrunc = _diff_flat_maps_rich(flat_a, flat_b)
+            diff_count = str(dcount)
+            flatten_truncated = "yes" if (trunc_a or trunc_b) else ""
+            diff_truncated = "yes" if dtrunc else ""
+
+            for d in diffs:
+                if diff_rows_written >= max_diff_rows_total:
+                    # Keep file-level rows, stop path-level rows.
+                    continue
+                ws5.append(
+                    [
+                        name,
+                        xlsx_cell(d.get("path")),
+                        xlsx_cell(d.get("status")),
+                        xlsx_cell(d.get("a")),
+                        xlsx_cell(d.get("b")),
+                        xlsx_cell(d.get("a_full")),
+                        xlsx_cell(d.get("b_full")),
+                    ]
+                )
+                diff_rows_written += 1
+
+        ws4.append(
+            [
+                name,
+                "yes" if present_a else "no",
+                "yes" if present_b else "no",
+                "yes" if parse_a_ok else "no" if present_a else "",
+                "yes" if parse_b_ok else "no" if present_b else "",
+                diff_count,
+                flatten_truncated,
+                diff_truncated,
+            ]
+        )
+
+    if diff_rows_written >= max_diff_rows_total:
+        ws5.append(["<truncated>", "Reached max rows", str(max_diff_rows_total), "", "", "", ""])
+
     # Wrap text for long cells.
-    for w in (ws, ws2, ws3):
+    for w in (ws, ws2, ws3, ws4, ws5):
         for row in w.iter_rows():
             for cell in row:
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
@@ -661,6 +790,9 @@ def create_app(settings: Settings) -> FastAPI:
         run_ids = _list_dirs_sorted_desc(dataset_dir)
         sort_spec_raw = request.query_params.get("sort")
         sort_spec = _parse_sort_spec(sort_spec_raw)
+        q = request.query_params.get("q")
+        mode_filter = request.query_params.get("mode")
+        mode_filter_norm = (mode_filter or "").strip().lower() or None
         runs = []
         for run_id in run_ids:
             run_dir = dataset_dir / run_id
@@ -671,11 +803,30 @@ def create_app(settings: Settings) -> FastAPI:
 
             cpu_model = _extract_cpu_model_from_server_info(server_info_head)
             cpu_cores = _count_cpulist(_extract_numactl_cpulist(cpu_bind))
+            mode = _read_mode(run_dir)
+
+            if mode_filter_norm is not None:
+                if (mode or "").strip().lower() != mode_filter_norm:
+                    continue
+
+            if q:
+                qn = q.strip().lower()
+                hay = " ".join(
+                    [
+                        run_id,
+                        mode or "",
+                        cpu_model or "",
+                        cpu_bind or "",
+                    ]
+                ).lower()
+                if qn not in hay:
+                    continue
 
             runs.append(
                 {
                     "id": run_id,
                     "timestamp": run_id,
+                    "mode": mode,
                     "has_cpu_bind": (run_dir / "cpu-bind.txt").is_file(),
                     "cpu_bind": (cpu_bind.strip() if isinstance(cpu_bind, str) and cpu_bind.strip() else None),
                     "cpu_cores": cpu_cores,
@@ -706,6 +857,9 @@ def create_app(settings: Settings) -> FastAPI:
                 runs.sort(key=lambda r: (r.get("cpu_model") or ""), reverse=reverse)
                 # Keep unknown CPU model (None) last regardless of direction.
                 runs.sort(key=lambda r: (r.get("cpu_model") is None))
+            elif field == "mode":
+                runs.sort(key=lambda r: (r.get("mode") or ""), reverse=reverse)
+                runs.sort(key=lambda r: (r.get("mode") is None))
         bc = _breadcrumbs(("datasets", "/"), (dataset, f"/dataset/{dataset}"))
         return templates.TemplateResponse(
             "dataset.html",
@@ -715,6 +869,8 @@ def create_app(settings: Settings) -> FastAPI:
                 "dataset": dataset,
                 "runs": runs,
                 "sort": sort_spec_raw or "-timestamp,-cpu_cores,cpu_model",
+                "q": q or "",
+                "mode_filter": mode_filter or "",
                 "runs_dir": str(settings.runs_dir),
                 "breadcrumbs": bc,
             },
@@ -741,8 +897,11 @@ def create_app(settings: Settings) -> FastAPI:
         if not cpu_bind:
             cpu_bind = _extract_cpu_bind_from_server_info(server_info)
 
+        mode = _read_mode(run_dir)
+
         downloads = []
         for rel, label in [
+            ("mode.txt", "mode.txt"),
             ("cpu-bind.txt", "cpu-bind.txt"),
             ("outputs/summary.tsv", "summary.tsv"),
             ("outputs/details.md", "details.md"),
@@ -750,6 +909,8 @@ def create_app(settings: Settings) -> FastAPI:
             ("outputs/output.search.json", "output.search.json"),
             ("outputs/output.build.json", "output.build.json"),
             ("configs/pq-vs-spherical.json", "config"),
+            ("configs/mem-fp.json", "config (mem-fp)"),
+            ("configs/disk-index.json", "config (disk-index)"),
             ("server-info.txt", "server-info.txt"),
         ]:
             p = run_dir / rel
@@ -772,6 +933,7 @@ def create_app(settings: Settings) -> FastAPI:
                 "dataset": dataset,
                 "run_id": run_id,
                 "run_path": str(run_dir),
+                "mode": (mode.strip() if isinstance(mode, str) and mode.strip() else None),
                 "has_cpu_bind_file": has_cpu_bind_file,
                 "cpu_bind": (cpu_bind.strip() if isinstance(cpu_bind, str) and cpu_bind.strip() else None),
                 "summary_headers": headers,
@@ -789,6 +951,9 @@ def create_app(settings: Settings) -> FastAPI:
         a = request.query_params.get("a")
         b = request.query_params.get("b")
         mode = (request.query_params.get("mode") or "b_over_a").strip().lower()
+        cfg_mode = (request.query_params.get("cfg") or "all").strip().lower()
+        if cfg_mode not in {"all", "common"}:
+            cfg_mode = "all"
         if mode in {"ba", "b/a", "b_over_a"}:
             mode = "b_over_a"
         elif mode in {"ab", "a/b", "a_over_b"}:
@@ -814,7 +979,22 @@ def create_app(settings: Settings) -> FastAPI:
         # configs/*.json compare (optional)
         cfg_names_a = set(_list_config_json_files(run_a_dir))
         cfg_names_b = set(_list_config_json_files(run_b_dir))
-        cfg_names = sorted(cfg_names_a | cfg_names_b)
+        cfg_common = cfg_names_a & cfg_names_b
+        cfg_only_a = cfg_names_a - cfg_names_b
+        cfg_only_b = cfg_names_b - cfg_names_a
+        cfg_names = sorted(cfg_names_a | cfg_names_b) if cfg_mode == "all" else sorted(cfg_common)
+
+        config_hint: str | None = None
+        # Common scenario: a newer run writes expanded per-search config json files,
+        # while an older run only keeps the base pq-vs-spherical.search.json.
+        if cfg_only_a and ("pq-vs-spherical.search.json" in cfg_names_b):
+            expanded_only_a = [n for n in cfg_only_a if n.startswith("pq-vs-spherical.search.")]
+            if expanded_only_a:
+                config_hint = (
+                    "Run B only has base configs (e.g. pq-vs-spherical.search.json). "
+                    "Run A contains expanded per-search config files, so many entries appear as missing in B. "
+                    "Use cfg=common to hide missing entries."
+                )
         config_compares: list[dict[str, Any]] = []
         for name in cfg_names:
             pa = (run_a_dir / "configs" / name)
@@ -897,7 +1077,11 @@ def create_app(settings: Settings) -> FastAPI:
             rb = idx_b.get(k)
             out: dict[str, Any] = {}
             for i, f in enumerate(key_fields):
-                out[f] = k[i] if i < len(k) else ""
+                if f == "detail":
+                    raw_detail = ((ra.get("detail") if ra else None) or (rb.get("detail") if rb else None) or "").strip()
+                    out[f] = raw_detail or (k[i] if i < len(k) else "")
+                else:
+                    out[f] = k[i] if i < len(k) else ""
             out["present_a"] = ra is not None
             out["present_b"] = rb is not None
 
@@ -935,9 +1119,17 @@ def create_app(settings: Settings) -> FastAPI:
                 "meta_a": meta_a,
                 "meta_b": meta_b,
                 "mode": mode,
+                "cfg_mode": cfg_mode,
                 "delta_label": delta_label,
-                "download_href": f"/compare/{dataset}/download?a={urllib.parse.quote(a)}&b={urllib.parse.quote(b)}&mode={urllib.parse.quote(mode)}",
+                "download_href": f"/compare/{dataset}/download?a={urllib.parse.quote(a)}&b={urllib.parse.quote(b)}&mode={urllib.parse.quote(mode)}&cfg={urllib.parse.quote(cfg_mode)}",
                 "config_compares": config_compares,
+                "config_counts": {
+                    "common": len(cfg_common),
+                    "only_a": len(cfg_only_a),
+                    "only_b": len(cfg_only_b),
+                    "all": len(cfg_names_a | cfg_names_b),
+                },
+                "config_hint": config_hint,
                 "key_fields": key_fields,
                 "metrics": metrics,
                 "rows": compare_rows,
@@ -952,6 +1144,9 @@ def create_app(settings: Settings) -> FastAPI:
         a = request.query_params.get("a")
         b = request.query_params.get("b")
         mode = (request.query_params.get("mode") or "b_over_a").strip().lower()
+        cfg_mode = (request.query_params.get("cfg") or "all").strip().lower()
+        if cfg_mode not in {"all", "common"}:
+            cfg_mode = "all"
         if mode in {"ba", "b/a", "b_over_a"}:
             mode = "b_over_a"
         elif mode in {"ab", "a/b", "a_over_b"}:
@@ -1009,7 +1204,11 @@ def create_app(settings: Settings) -> FastAPI:
             rb = idx_b.get(k)
             out: dict[str, Any] = {}
             for i, f in enumerate(key_fields):
-                out[f] = k[i] if i < len(k) else ""
+                if f == "detail":
+                    raw_detail = ((ra.get("detail") if ra else None) or (rb.get("detail") if rb else None) or "").strip()
+                    out[f] = raw_detail or (k[i] if i < len(k) else "")
+                else:
+                    out[f] = k[i] if i < len(k) else ""
             out["present_a"] = ra is not None
             out["present_b"] = rb is not None
 
@@ -1036,6 +1235,7 @@ def create_app(settings: Settings) -> FastAPI:
             a=a,
             b=b,
             mode=mode,
+            cfg_mode=cfg_mode,
             delta_label=delta_label,
             meta_a=meta_a,
             meta_b=meta_b,

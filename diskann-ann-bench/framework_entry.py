@@ -1,0 +1,600 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable
+
+import yaml
+
+import h5py
+import numpy as np
+
+from ann_benchmarks.algorithms.diskann_rs.module import (
+    DiskANNRS,
+    DiskANNRS_PQ,
+    DiskANNRS_Spherical,
+)
+from ann_benchmarks.distance import dataset_transform
+
+
+
+@dataclass(frozen=True)
+class StageOutputs:
+    build_json: Path
+    search_json: Path
+    summary_tsv: Path
+    details_md: Path
+
+
+def _write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _write_json(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8")
+
+
+def _pctl(xs: list[float], q: float) -> float:
+    if not xs:
+        return float("nan")
+    xs2 = sorted(xs)
+    if q <= 0:
+        return xs2[0]
+    if q >= 1:
+        return xs2[-1]
+    i = int(round(q * (len(xs2) - 1)))
+    return xs2[max(0, min(len(xs2) - 1, i))]
+
+
+def _recall_at_k(results: Iterable[list[int]], truth: np.ndarray, k: int) -> float:
+    # truth: (n_queries, >=k)
+    if k <= 0:
+        return 0.0
+    total = 0.0
+    n = 0
+    for i, ids in enumerate(results):
+        gt = truth[i, :k]
+        gt_set = set(int(x) for x in gt if int(x) >= 0)
+        if not gt_set:
+            continue
+        hit = 0
+        for x in ids[:k]:
+            if int(x) in gt_set:
+                hit += 1
+        total += hit / float(k)
+        n += 1
+    return total / float(max(1, n))
+
+
+def _run_queries(
+    *,
+    algo: Any,
+    X_test: np.ndarray,
+    k: int,
+    reps: int,
+    batch: bool,
+) -> tuple[list[float], list[list[int]]]:
+    latencies_s: list[float] = []
+    ids_per_query: list[list[int]] = []
+
+    if reps <= 0:
+        raise ValueError("reps must be >= 1")
+
+    for _ in range(reps):
+        if batch:
+            t0 = time.perf_counter()
+            algo.batch_query(X_test, k)
+            t1 = time.perf_counter()
+            res = algo.get_batch_results()
+
+            ids_per_query = [list(map(int, row)) for row in res]
+
+            per_query = (t1 - t0) / float(max(1, len(ids_per_query)))
+            latencies_s.extend([per_query] * len(ids_per_query))
+        else:
+            ids_per_query = []
+            for v in X_test:
+                t0 = time.perf_counter()
+                ids = algo.query(v, k)
+                t1 = time.perf_counter()
+                latencies_s.append(t1 - t0)
+                ids_per_query.append([int(x) for x in ids])
+
+    return latencies_s, ids_per_query
+
+
+def _algo_ctor_and_prefix(algo: str, index_dir: Path) -> tuple[type, Path]:
+    if algo == "fp":
+        return DiskANNRS, (index_dir / "diskann_rs")
+    if algo == "pq":
+        return DiskANNRS_PQ, (index_dir / "diskann_rs_pq")
+    if algo == "spherical":
+        return DiskANNRS_Spherical, (index_dir / "diskann_rs_spherical")
+    raise ValueError(f"unsupported algo={algo!r}")
+
+
+def _default_diskann_config_yml() -> Path:
+    # .../DiskANN-playground/diskann-ann-bench/framework_entry.py
+    workspace_root = Path(__file__).resolve().parents[2]
+    return (
+        workspace_root
+        / "ann-benchmark-epeshared"
+        / "ann_benchmarks"
+        / "algorithms"
+        / "diskann_rs"
+        / "config.yml"
+    )
+
+
+def _load_run_group_preset(
+    *,
+    config_yml: Path,
+    distance: str,
+    run_group: str,
+) -> dict[str, Any]:
+    """Load params from ann-benchmarks algorithm config.yml.
+
+    Returns a dict containing:
+      - algo: one of fp|pq|spherical
+      - params: dict to merge into the adapter param
+      - l_search: optional int derived from query_args
+    """
+    cfg = yaml.safe_load(config_yml.read_text(encoding="utf-8"))
+    float_cfg = (cfg or {}).get("float")
+    if not isinstance(float_cfg, dict):
+        raise ValueError(f"invalid config.yml (missing float: ...): {config_yml}")
+
+    # ann-benchmarks uses distance keys angular/euclidean.
+    dist_cfg = float_cfg.get(distance)
+    if not isinstance(dist_cfg, list):
+        raise ValueError(
+            f"config.yml has no float/{distance} section (expected list): {config_yml}"
+        )
+
+    for entry in dist_cfg:
+        if not isinstance(entry, dict):
+            continue
+        run_groups = entry.get("run_groups")
+        if not isinstance(run_groups, dict):
+            continue
+        if run_group not in run_groups:
+            continue
+
+        rg = run_groups[run_group]
+        if not isinstance(rg, dict):
+            raise ValueError(f"invalid run_group shape for {run_group!r} in {config_yml}")
+
+        args_list = rg.get("args")
+        if not isinstance(args_list, list) or not args_list or not isinstance(args_list[0], dict):
+            raise ValueError(f"run_group {run_group!r} is missing args: [{{...}}]")
+
+        ctor = str(entry.get("constructor", ""))
+        if ctor == "DiskANNRS":
+            algo = "fp"
+        elif ctor == "DiskANNRS_PQ":
+            algo = "pq"
+        elif ctor == "DiskANNRS_Spherical":
+            algo = "spherical"
+        else:
+            raise ValueError(f"unsupported constructor in config.yml: {ctor!r}")
+
+        # query_args in config.yml maps to adapter set_query_arguments(l_search).
+        l_search: int | None = None
+        qargs = rg.get("query_args")
+        if isinstance(qargs, list) and qargs and isinstance(qargs[0], list) and qargs[0]:
+            try:
+                l_search = int(qargs[0][0])
+            except Exception:
+                l_search = None
+
+        return {"algo": algo, "params": dict(args_list[0]), "l_search": l_search}
+
+    raise ValueError(
+        f"run_group {run_group!r} not found for float/{distance} in {config_yml}"
+    )
+
+
+def _ensure_dataset_symlink(*, work_dir: Path, dataset: str, hdf5_path: Path) -> Path:
+    data_dir = work_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    dst = data_dir / f"{dataset}.hdf5"
+    if dst.exists() or dst.is_symlink():
+        try:
+            dst.unlink()
+        except Exception:
+            pass
+    dst.symlink_to(hdf5_path)
+    return dst
+
+
+def _load_hdf5_arrays(
+    *,
+    hdf5_path: Path,
+    train_key: str,
+    test_key: str,
+    neighbors_key: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, str]:
+    with h5py.File(hdf5_path, "r") as f:
+        distance = str(f.attrs.get("distance", "angular"))
+        X_train_raw, X_test_raw = dataset_transform(f)
+        X_train = np.asarray(X_train_raw, dtype=np.float32, order="C")
+        X_test = np.asarray(X_test_raw, dtype=np.float32, order="C")
+        neighbors = np.asarray(f[neighbors_key], dtype=np.int32, order="C")
+    return X_train, X_test, neighbors, distance
+
+
+def _outputs(work_dir: Path) -> StageOutputs:
+    out_dir = work_dir / "outputs"
+    return StageOutputs(
+        build_json=out_dir / "output.build.json",
+        search_json=out_dir / "output.search.json",
+        summary_tsv=out_dir / "summary.tsv",
+        details_md=out_dir / "details.md",
+    )
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Run diskann-rs via ann-benchmarks framework (split build/search)")
+    ap.add_argument("--work-dir", required=True)
+    ap.add_argument("--hdf5", required=True)
+    ap.add_argument("--dataset", required=True)
+
+    ap.add_argument(
+        "--metric",
+        default=None,
+        choices=["angular", "euclidean", "cosine", "l2"],
+        help="Override dataset distance/metric (default: use HDF5 attrs['distance'])",
+    )
+
+    ap.add_argument("--train-key", default="train")
+    ap.add_argument("--test-key", default="test")
+    ap.add_argument("--neighbors-key", default="neighbors")
+
+    ap.add_argument(
+        "--index-dir",
+        default=None,
+        help="Directory to store/reuse index files (default: <work-dir>/index)",
+    )
+
+    ap.add_argument("--stage", choices=["all", "build", "search"], default="all")
+    ap.add_argument("--algo", choices=["fp", "pq", "spherical"], default="fp")
+
+    ap.add_argument(
+        "--config-yml",
+        default=None,
+        help="Path to ann-benchmarks diskann_rs/config.yml (only used with --run-group)",
+    )
+    ap.add_argument(
+        "--run-group",
+        default=None,
+        help="Run-group name from diskann_rs/config.yml; fills l_build/max_outdegree/alpha/(pq|spherical) params",
+    )
+
+    ap.add_argument("--l-build", type=int, default=None)
+    ap.add_argument("--max-outdegree", type=int, default=None)
+    ap.add_argument("--alpha", type=float, default=None)
+
+    ap.add_argument("--num-pq-chunks", type=int, default=None)
+    ap.add_argument("--num-centers", type=int, default=256)
+    ap.add_argument("--max-k-means-reps", type=int, default=12)
+    ap.add_argument(
+        "--translate-to-center",
+        action="store_true",
+        default=None,
+        help="PQ only. If omitted, defaults to True for euclidean/l2 and False for angular/cosine.",
+    )
+    ap.add_argument("--no-translate-to-center", action="store_false", dest="translate_to_center")
+    ap.add_argument("--pq-seed", type=int, default=0)
+
+    ap.add_argument("--spherical-nbits", type=int, default=2, choices=[1, 2, 4])
+    ap.add_argument("--spherical-seed", type=int, default=0)
+
+    ap.add_argument("-k", type=int, default=10)
+    ap.add_argument("--l-search", type=int, default=None)
+    ap.add_argument("--reps", type=int, default=3)
+    ap.add_argument("--batch", action="store_true", help="Use ann-benchmarks batch_query path")
+
+    args = ap.parse_args()
+
+    work_dir = Path(args.work_dir).expanduser().resolve()
+    hdf5_path = Path(args.hdf5).expanduser().resolve()
+    dataset = str(args.dataset)
+
+    if not hdf5_path.is_file():
+        raise FileNotFoundError(str(hdf5_path))
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+    (work_dir / "outputs").mkdir(parents=True, exist_ok=True)
+    index_dir = (Path(args.index_dir).expanduser().resolve() if args.index_dir else (work_dir / "index"))
+    index_dir.mkdir(parents=True, exist_ok=True)
+
+    # Keep all framework relative paths contained under work_dir.
+    os.chdir(work_dir)
+
+    # Make the dataset available to ann_benchmarks.datasets.get_dataset() under ./data/<dataset>.hdf5
+    _ensure_dataset_symlink(work_dir=work_dir, dataset=dataset, hdf5_path=hdf5_path)
+
+    # Load raw arrays once (also used for recall ground truth).
+    t_load0 = time.perf_counter()
+    X_train_raw, X_test_raw, neighbors, distance = _load_hdf5_arrays(
+        hdf5_path=hdf5_path,
+        train_key=args.train_key,
+        test_key=args.test_key,
+        neighbors_key=args.neighbors_key,
+    )
+    t_load1 = time.perf_counter()
+
+    if args.metric is not None:
+        metric = str(args.metric)
+        if metric in {"cosine", "angular"}:
+            distance = "angular"
+        elif metric in {"l2", "euclidean"}:
+            distance = "euclidean"
+        else:
+            distance = metric
+
+    # Optional: load build/search params from ann-benchmarks config.yml run_group.
+    if args.run_group is not None:
+        config_yml = (
+            Path(args.config_yml).expanduser().resolve()
+            if args.config_yml
+            else _default_diskann_config_yml()
+        )
+        preset = _load_run_group_preset(config_yml=config_yml, distance=distance, run_group=str(args.run_group))
+
+        preset_algo = str(preset["algo"])
+        if args.algo and args.algo != preset_algo:
+            # Keep behavior predictable: preset decides algo type.
+            args.algo = preset_algo
+        else:
+            args.algo = preset_algo
+
+        p = dict(preset["params"])
+        if args.l_build is None and "l_build" in p:
+            args.l_build = int(p["l_build"])
+        if args.max_outdegree is None and "max_outdegree" in p:
+            args.max_outdegree = int(p["max_outdegree"])
+        if args.alpha is None and "alpha" in p:
+            args.alpha = float(p["alpha"])
+
+        if args.algo == "pq" and args.num_pq_chunks is None and "num_pq_chunks" in p:
+            args.num_pq_chunks = int(p["num_pq_chunks"])
+        if args.algo == "pq" and args.translate_to_center is None and "translate_to_center" in p:
+            v = p["translate_to_center"]
+            if isinstance(v, bool):
+                args.translate_to_center = v
+            elif isinstance(v, str):
+                vv = v.strip().lower()
+                if vv in {"1", "true", "t", "yes", "y"}:
+                    args.translate_to_center = True
+                elif vv in {"0", "false", "f", "no", "n"}:
+                    args.translate_to_center = False
+            else:
+                args.translate_to_center = bool(v)
+        if args.algo == "spherical" and "nbits" in p:
+            args.spherical_nbits = int(p["nbits"])
+
+        if args.l_search is None and preset.get("l_search") is not None:
+            args.l_search = int(preset["l_search"])
+
+    # Fill remaining defaults (CLI values win over preset).
+    if args.l_build is None:
+        args.l_build = 64
+    if args.max_outdegree is None:
+        args.max_outdegree = 32
+    if args.alpha is None:
+        args.alpha = 1.2
+    if args.l_search is None:
+        args.l_search = 100
+
+    if int(args.l_search) < int(args.k):
+        print(
+            f"WARN: l_search ({int(args.l_search)}) < k ({int(args.k)}); bumping l_search to {int(args.k)}",
+            file=sys.stderr,
+        )
+        args.l_search = int(args.k)
+
+    X_train = np.asarray(X_train_raw, dtype=np.float32, order="C")
+    X_test = np.asarray(X_test_raw, dtype=np.float32, order="C")
+
+    do_build = args.stage in ("all", "build")
+    do_search = args.stage in ("all", "search")
+
+    alg_cls, index_prefix = _algo_ctor_and_prefix(args.algo, index_dir)
+
+    if args.algo == "pq" and args.num_pq_chunks is None:
+        raise ValueError("--num-pq-chunks is required when --algo pq (or supply it via --run-group)")
+
+    outputs = _outputs(work_dir)
+
+    translate_to_center: bool | None = args.translate_to_center
+    if args.algo == "pq" and translate_to_center is None:
+        # PQ centering is compatible with L2. For cosine/angular, centering destroys
+        # similarity semantics for unit-normalized vectors.
+        translate_to_center = distance == "euclidean"
+
+    # Build stage
+    if do_build:
+        param: dict[str, Any] = {
+            "l_build": int(args.l_build),
+            "max_outdegree": int(args.max_outdegree),
+            "alpha": float(args.alpha),
+            "index_action": "build_and_save",
+            "index_prefix": str(index_prefix),
+        }
+        if args.algo == "pq":
+            param.update(
+                {
+                    "num_pq_chunks": int(args.num_pq_chunks),
+                    "num_centers": int(args.num_centers),
+                    "max_k_means_reps": int(args.max_k_means_reps),
+                    "translate_to_center": bool(translate_to_center),
+                    "rng_seed": int(args.pq_seed),
+                }
+            )
+        if args.algo == "spherical":
+            param.update({"nbits": int(args.spherical_nbits), "rng_seed": int(args.spherical_seed)})
+
+        algo = alg_cls(distance, param)
+        try:
+            t_fit0 = time.perf_counter()
+            algo.fit(X_train)
+            t_fit1 = time.perf_counter()
+        finally:
+            algo.done()
+
+        build_obj: dict[str, Any] = {
+            "algo": args.algo,
+            "distance": distance,
+            "l_build": int(args.l_build),
+            "max_outdegree": int(args.max_outdegree),
+            "alpha": float(args.alpha),
+            "n_points": int(X_train.shape[0]),
+            "dim": int(X_train.shape[1]),
+            "load_s": float(t_load1 - t_load0),
+            "fit_s": float(t_fit1 - t_fit0),
+            "index_prefix": str(index_prefix),
+        }
+        if args.algo == "pq":
+            build_obj.update(
+                {
+                    "num_pq_chunks": int(args.num_pq_chunks),
+                    "num_centers": int(args.num_centers),
+                    "max_k_means_reps": int(args.max_k_means_reps),
+                    "translate_to_center": bool(translate_to_center),
+                    "pq_seed": int(args.pq_seed),
+                }
+            )
+        if args.algo == "spherical":
+            build_obj.update({"nbits": int(args.spherical_nbits), "spherical_seed": int(args.spherical_seed)})
+        _write_json(outputs.build_json, build_obj)
+
+    # Search stage
+    if do_search:
+        param: dict[str, Any] = {
+            "l_build": int(args.l_build),
+            "max_outdegree": int(args.max_outdegree),
+            "alpha": float(args.alpha),
+            "index_action": "load",
+            "index_prefix": str(index_prefix),
+        }
+        if args.algo == "pq":
+            param.update(
+                {
+                    "num_pq_chunks": int(args.num_pq_chunks),
+                    "num_centers": int(args.num_centers),
+                    "max_k_means_reps": int(args.max_k_means_reps),
+                    "translate_to_center": bool(translate_to_center),
+                    "rng_seed": int(args.pq_seed),
+                }
+            )
+        if args.algo == "spherical":
+            param.update({"nbits": int(args.spherical_nbits), "rng_seed": int(args.spherical_seed)})
+
+        algo = alg_cls(distance, param)
+        try:
+            # fit() will load the index. Also apply l_search.
+            algo.set_query_arguments(int(args.l_search))
+            t_load_index0 = time.perf_counter()
+            algo.fit(X_train)
+            t_load_index1 = time.perf_counter()
+
+            latencies, ids_only = _run_queries(
+                algo=algo,
+                X_test=X_test,
+                k=int(args.k),
+                reps=int(args.reps),
+                batch=bool(args.batch),
+            )
+        finally:
+            algo.done()
+
+        recall = _recall_at_k(ids_only, neighbors, int(args.k))
+
+        mean_lat_s = float(sum(latencies) / max(1, len(latencies)))
+        qps = float(1.0 / mean_lat_s) if mean_lat_s > 0 else 0.0
+
+        search_obj: dict[str, Any] = {
+            "algo": args.algo,
+            "distance": distance,
+            "l_build": int(args.l_build),
+            "max_outdegree": int(args.max_outdegree),
+            "alpha": float(args.alpha),
+            "k": int(args.k),
+            "l_search": int(args.l_search),
+            "reps": int(args.reps),
+            "batch": bool(args.batch),
+            "n_queries": int(X_test.shape[0]),
+            "recall_at_k": float(recall),
+            "qps_mean": float(qps),
+            "lat_mean_us": float(mean_lat_s * 1e6),
+            "lat_p50_us": float(_pctl(latencies, 0.50) * 1e6),
+            "lat_p95_us": float(_pctl(latencies, 0.95) * 1e6),
+            "lat_p99_us": float(_pctl(latencies, 0.99) * 1e6),
+            "index_prefix": str(index_prefix),
+            "load_index_s": float(t_load_index1 - t_load_index0),
+        }
+        if args.algo == "pq":
+            search_obj.update(
+                {
+                    "num_pq_chunks": int(args.num_pq_chunks),
+                    "num_centers": int(args.num_centers),
+                    "max_k_means_reps": int(args.max_k_means_reps),
+                    "translate_to_center": bool(translate_to_center),
+                    "pq_seed": int(args.pq_seed),
+                }
+            )
+        if args.algo == "spherical":
+            search_obj.update({"nbits": int(args.spherical_nbits), "spherical_seed": int(args.spherical_seed)})
+        _write_json(outputs.search_json, search_obj)
+
+        # Web-friendly summary
+        headers = ["algo", "distance", "k", "l_search", "reps", "recall@k", "qps_mean", "lat_mean_us", "lat_p99_us"]
+        row = [
+            str(args.algo),
+            str(distance),
+            str(int(args.k)),
+            str(int(args.l_search)),
+            str(int(args.reps)),
+            f"{recall:.4f}",
+            f"{qps:.1f}",
+            f"{search_obj['lat_mean_us']:.1f}",
+            f"{search_obj['lat_p99_us']:.1f}",
+        ]
+        _write_text(outputs.summary_tsv, "\t".join(headers) + "\n" + "\t".join(row) + "\n")
+
+        details = [
+            "# diskann-ann-bench details",
+            "",
+            f"- algo: {args.algo}",
+            f"- distance: {distance}",
+            f"- k: {int(args.k)}",
+            f"- l_search: {int(args.l_search)}",
+            f"- reps: {int(args.reps)}",
+            f"- batch: {bool(args.batch)}",
+            f"- recall@k: {recall:.6f}",
+            f"- qps_mean: {qps:.3f}",
+            f"- lat_mean_us: {search_obj['lat_mean_us']:.3f}",
+            f"- lat_p99_us: {search_obj['lat_p99_us']:.3f}",
+            "",
+            "## Timings",
+            "",
+            f"- load_hdf5_s: {t_load1 - t_load0:.3f}",
+            f"- load_index_s: {t_load_index1 - t_load_index0:.3f}",
+        ]
+        _write_text(outputs.details_md, "\n".join(details) + "\n")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

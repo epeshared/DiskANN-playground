@@ -2,7 +2,7 @@
 
 A standalone web UI for browsing **diskann-ann-bench split runner** outputs.
 
-It reads benchmark runs under a `runs/` directory in the same format as `extend-rabitq/ann-harness`:
+It reads benchmark runs under a `runs/` directory:
 
 - `<runs_dir>/<dataset>/<run_id>/outputs/summary.tsv`
 - `<runs_dir>/<dataset>/<run_id>/outputs/details.md` (optional)
@@ -24,7 +24,7 @@ python3 -m pip install -r DiskANN-playground/diskann-ann-bench/web/requirements.
 
 ## Run
 
-Default (reads `DiskANN-playground/extend-rabitq/ann-harness/runs`):
+Default (reads `DiskANN-playground/diskann-ann-bench/result`):
 
 ```bash
 bash DiskANN-playground/diskann-ann-bench/web/run_web.sh --host 127.0.0.1 --port 8081
@@ -33,7 +33,7 @@ bash DiskANN-playground/diskann-ann-bench/web/run_web.sh --host 127.0.0.1 --port
 Custom runs dir:
 
 ```bash
-RUNS_DIR=/path/to/DiskANN-playground/extend-rabitq/ann-harness/runs \
+RUNS_DIR=/path/to/runs_dir \
   bash DiskANN-playground/diskann-ann-bench/web/run_web.sh --host 0.0.0.0 --port 8081
 ```
 
@@ -43,4 +43,5 @@ Open:
 
 ## Tips
 
-- If you used `run_diskann_rs_split.py` (local or remote), it already writes the run folder into the harness runs tree by default, so it should appear automatically.
+- If you used `run_local.sh` or `run_remote.py`, they write runs under `DiskANN-playground/diskann-ann-bench/result` by default, so they should appear automatically.
+- In compare/sweep runs, a single `run_id` can contain multiple cases under `cases/`, but the run root still has `outputs/*` as an aggregated view for browsing.

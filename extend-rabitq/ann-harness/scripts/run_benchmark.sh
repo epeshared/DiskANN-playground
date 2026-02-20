@@ -30,8 +30,12 @@ mkdir -p "$(dirname "$OUTPUT_ABS")"
 cd "$REPO_ROOT"
 
 # diskann-benchmark has empty default features; enable what we need.
+# Override with DISKANN_BENCH_FEATURES if you need additional backends (e.g. disk-index).
+FEATURES_DEFAULT="product-quantization,spherical-quantization"
+FEATURES="${DISKANN_BENCH_FEATURES:-$FEATURES_DEFAULT}"
+
 cargo run --release --manifest-path "$DISKANN_RS/Cargo.toml" --package diskann-benchmark \
-  --features product-quantization,spherical-quantization \
+  --features "$FEATURES" \
   -- run --input-file "$INPUT_ABS" --output-file "$OUTPUT_ABS"
 
 echo "Wrote output: $OUTPUT_JSON"

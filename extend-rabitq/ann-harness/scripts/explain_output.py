@@ -15,13 +15,62 @@ def _us_to_s(us: int | float | None) -> float | None:
 
 
 def _mean(xs):
-    xs = list(xs) if xs is not None else []
+    if xs is None:
+        return None
+    if not isinstance(xs, list):
+        xs = [xs]
+    xs = [x for x in xs if isinstance(x, (int, float))]
     return sum(xs) / len(xs) if xs else None
 
 
 def _max(xs):
-    xs = list(xs) if xs is not None else []
+    if xs is None:
+        return None
+    if not isinstance(xs, list):
+        xs = [xs]
+    xs = [x for x in xs if isinstance(x, (int, float))]
     return max(xs) if xs else None
+
+
+def _extract_disk_index_rows(res: dict) -> list[dict]:
+    if not isinstance(res, dict):
+        return []
+    search = res.get('search')
+    if not isinstance(search, dict):
+        build = res.get('build')
+        if isinstance(build, dict):
+            search = build.get('search')
+    if not isinstance(search, dict):
+        return []
+
+    num_threads = search.get('num_threads')
+    beam_width = search.get('beam_width')
+    recall_at = search.get('recall_at')
+    reps = search.get('reps')
+
+    results_per_l = search.get('search_results_per_l')
+    if not isinstance(results_per_l, list):
+        return []
+
+    rows = []
+    for r in results_per_l:
+        if not isinstance(r, dict):
+            continue
+        rows.append(
+            {
+                'L': r.get('search_l'),
+                'threads': num_threads,
+                'beam_width': beam_width,
+                'recall_at': recall_at,
+                'reps': reps,
+                'qps_mean': _mean(r.get('qps')),
+                'qps_max': _max(r.get('qps')),
+                'lat_mean_us_mean': _mean(r.get('mean_latency')),
+                'lat_p999_us_mean': _mean(r.get('p999_latency')),
+                'recall_mean': _mean(r.get('recall')),
+            }
+        )
+    return rows
 
 
 def _fmt(x, nd=3):
@@ -137,6 +186,22 @@ def main() -> int:
 
         # Search results (Topk)
         print('- search_results:')
+        if job_type == 'disk-index':
+            rows = _extract_disk_index_rows(res)
+            if not rows:
+                print('  - <no disk-index rows found>')
+            for row in rows:
+                rep_txt = ''
+                if row.get('reps') is not None:
+                    rep_txt = f" reps={row.get('reps')}"
+                print(
+                    "  - "
+                    + f"L={row['L']} threads={row['threads']} bw={row['beam_width']} recall_at={row['recall_at']}" + rep_txt + " "
+                    + f"recall={_fmt(row['recall_mean'], nd=4)} qps_mean={_fmt(row['qps_mean'], nd=1)} qps_max={_fmt(row['qps_max'], nd=1)} "
+                    + f"lat_mean_us={_fmt(row['lat_mean_us_mean'], nd=1)} lat_p999_us={_fmt(row['lat_p999_us_mean'], nd=1)}"
+                )
+            print('')
+            continue
         if job_type == 'async-index-build-spherical-quantization' and isinstance(res.get('runs'), list):
             runs = res.get('runs')
             print(f"  - runs: {len(runs)}")

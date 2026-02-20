@@ -6,6 +6,10 @@
       <span class="small">{{ run_path }}</span>
     </div>
 
+    {% if mode %}
+      <div class="small" style="margin-top:8px;">Mode: <code>{{ mode }}</code></div>
+    {% endif %}
+
     <div class="small" style="margin-top:8px;">
       CPU bind: <code>{{ cpu_bind if cpu_bind else "<none>" }}</code>
       <span style="margin-left:10px;">cpu-bind.txt={{ "yes" if has_cpu_bind_file else "no" }}</span>

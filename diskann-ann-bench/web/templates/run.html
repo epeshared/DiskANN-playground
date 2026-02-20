@@ -8,16 +8,61 @@
         <div class="k">run_id</div><div>{{ run_id }}</div>
         <div class="k">mode</div><div><span class="badge">{{ mode or '' }}</span></div>
         <div class="k">cpu_bind</div><div>{% if cpu_bind %}{{ cpu_bind }}{% if cpu_cores is not none %} <span class="small">({{ cpu_cores }} cores)</span>{% endif %}{% endif %}</div>
+        {% if lscpu_info %}
+        <div class="k">server info</div><div><pre style="margin:0;white-space:pre-wrap">{{ lscpu_info }}</pre></div>
+        {% endif %}
       </div>
       <div class="actions" style="margin-top:12px">
         <a class="btn" href="/api/file/{{ dataset | urlencode }}/{{ run_id | urlencode }}/outputs/summary.tsv">Download summary.tsv</a>
+        <a class="btn" href="/api/file/{{ dataset | urlencode }}/{{ run_id | urlencode }}/outputs/summary.pq.csv">Download summary.pq.csv</a>
+        <a class="btn" href="/api/file/{{ dataset | urlencode }}/{{ run_id | urlencode }}/outputs/summary.spherical.csv">Download summary.spherical.csv</a>
         <a class="btn" href="/api/file/{{ dataset | urlencode }}/{{ run_id | urlencode }}/outputs/details.md">Download details.md</a>
         <a class="btn" href="/api/file/{{ dataset | urlencode }}/{{ run_id | urlencode }}/outputs/output.build.json">Download build.json</a>
         <a class="btn" href="/api/file/{{ dataset | urlencode }}/{{ run_id | urlencode }}/outputs/output.search.json">Download search.json</a>
       </div>
     </div>
 
-    {% if summary.headers %}
+    {% if summary_pq.headers %}
+    <div class="panel">
+      <div class="h2">summary.pq.csv</div>
+      <table class="table">
+        <thead>
+          <tr>
+            {% for h in summary_pq.headers %}<th>{{ h }}</th>{% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in summary_pq.rows %}
+            <tr>
+              {% for cell in row %}<td>{{ cell }}</td>{% endfor %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% if summary_spherical.headers %}
+    <div class="panel">
+      <div class="h2">summary.spherical.csv</div>
+      <table class="table">
+        <thead>
+          <tr>
+            {% for h in summary_spherical.headers %}<th>{{ h }}</th>{% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in summary_spherical.rows %}
+            <tr>
+              {% for cell in row %}<td>{{ cell }}</td>{% endfor %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% if (not summary_pq.headers) and (not summary_spherical.headers) and summary.headers %}
     <div class="panel">
       <div class="h2">summary.tsv</div>
       <table class="table">

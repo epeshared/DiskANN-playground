@@ -5,12 +5,12 @@ set -euo pipefail
 # Usage:
 #   bash DiskANN-playground/diskann-ann-bench/run_web.sh [--host 127.0.0.1] [--port 8081]
 #
-# If RUNS_DIR is not set, defaults to DiskANN-playground/extend-rabitq/ann-harness/runs.
+# If RUNS_DIR is not set, defaults to DiskANN-playground/diskann-ann-bench/result.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}" )" && pwd)"
 PLAYGROUND_DIR="$(realpath "$SCRIPT_DIR/..")"
 
-HOST="127.0.0.1"
+HOST="0.0.0.0"
 PORT="8081"
 
 while [[ $# -gt 0 ]]; do
@@ -39,7 +39,7 @@ if ! python3 -c 'import fastapi, uvicorn, jinja2, markdown_it' >/dev/null 2>&1; 
 fi
 
 if [[ -z "${RUNS_DIR:-}" ]]; then
-  export RUNS_DIR="$PLAYGROUND_DIR/extend-rabitq/ann-harness/runs"
+  export RUNS_DIR="$SCRIPT_DIR/result"
 fi
 
 URL_BASE="http://$HOST:$PORT"

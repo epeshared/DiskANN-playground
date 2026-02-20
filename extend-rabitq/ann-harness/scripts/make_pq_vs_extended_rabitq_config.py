@@ -20,7 +20,14 @@ def main() -> int:
     ap.add_argument('--build-threads', type=int, default=32)
     ap.add_argument('--search-threads', type=int, default=32)
 
-    ap.add_argument('--reps', type=int, default=3)
+    ap.add_argument(
+        '--loop',
+        '--reps',
+        dest='reps',
+        type=int,
+        default=3,
+        help='How many times to repeat the full query set search (alias: --reps)',
+    )
     ap.add_argument('--search-n', type=int, default=100)
     ap.add_argument('--recall-k', type=int, default=10)
     ap.add_argument('--search-l', type=str, default='50,100,200,400', help='Comma-separated list')

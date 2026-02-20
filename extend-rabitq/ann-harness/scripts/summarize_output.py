@@ -6,13 +6,21 @@ import math
 from pathlib import Path
 
 
+def _as_list(xs):
+    if xs is None:
+        return []
+    if isinstance(xs, list):
+        return xs
+    return [xs]
+
+
 def _mean(xs):
-    xs = list(xs)
+    xs = [x for x in _as_list(xs) if isinstance(x, (int, float))]
     return sum(xs) / len(xs) if xs else None
 
 
 def _max(xs):
-    xs = list(xs)
+    xs = [x for x in _as_list(xs) if isinstance(x, (int, float))]
     return max(xs) if xs else None
 
 
@@ -72,6 +80,55 @@ def _extract_topk_rows(container):
     return rows
 
 
+def _extract_disk_index_rows(item: dict):
+    if not isinstance(item, dict):
+        return []
+    res = item.get('results', {})
+    if not isinstance(res, dict):
+        return []
+
+    # DiskIndexStats is { build: <opt>, search: DiskSearchStats }
+    search = res.get('search')
+    if not isinstance(search, dict):
+        # Be tolerant of alternate nesting.
+        build = res.get('build')
+        if isinstance(build, dict):
+            search = build.get('search')
+    if not isinstance(search, dict):
+        return []
+
+    num_threads = search.get('num_threads')
+    recall_at = search.get('recall_at')
+    results_per_l = search.get('search_results_per_l')
+    if not isinstance(results_per_l, list):
+        return []
+
+    rows = []
+    for r in results_per_l:
+        if not isinstance(r, dict):
+            continue
+        rows.append(
+            {
+                'search_l': r.get('search_l'),
+                # disk-index doesn't have search_n in its schema; use recall_at as a proxy.
+                'search_n': recall_at,
+                'num_tasks': num_threads,
+                'qps_mean': _mean(r.get('qps')),
+                'qps_max': _max(r.get('qps')),
+                # Latencies are reported in microseconds.
+                'lat_mean_us_mean': _mean(r.get('mean_latency')),
+                'lat_mean_us_max': _max(r.get('mean_latency')),
+                # Map p999_latency onto the existing p99 columns (best available).
+                'lat_p99_us_mean': _mean(r.get('p999_latency')),
+                'lat_p99_us_max': _max(r.get('p999_latency')),
+                'recall_avg': _mean(r.get('recall')),
+                'recall_k': recall_at,
+                'recall_n': recall_at,
+            }
+        )
+    return rows
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description='Summarize diskann-benchmark output.json')
     ap.add_argument('--input', required=True)
@@ -104,6 +161,28 @@ def main() -> int:
         inp = item.get('input', {})
         res = item.get('results', {})
         job_type = inp.get('type', 'unknown')
+
+        if job_type == 'disk-index':
+            for row in _extract_disk_index_rows(item):
+                print(
+                    '\t'.join(
+                        [
+                            str(job_type),
+                            str(''),
+                            str(row.get('num_tasks')),
+                            str(row.get('search_l')),
+                            str(row.get('search_n')),
+                            _fmt(row.get('recall_avg'), nd=4),
+                            _fmt(row.get('qps_mean'), nd=1),
+                            _fmt(row.get('qps_max'), nd=1),
+                            _fmt(row.get('lat_mean_us_mean'), nd=1),
+                            _fmt(row.get('lat_mean_us_max'), nd=1),
+                            _fmt(row.get('lat_p99_us_mean'), nd=1),
+                            _fmt(row.get('lat_p99_us_max'), nd=1),
+                        ]
+                    )
+                )
+            continue
 
         detail = ''
         if job_type == 'async-index-build-pq':

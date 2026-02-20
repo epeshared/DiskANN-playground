@@ -87,57 +87,82 @@ cd ../../ann-benchmark-epeshared
 python run.py --dataset glove-100-angular --algorithm diskann-rs -k 10 --runs 3 --timeout 7200 --parallelism 1
 ```
 
-## Split build/search + loop (harness-style)
+## Split build/search + loop (harness-style, framework-based)
 
 If you want an explicit **build stage** (build + save index once) and then a **search stage** that can loop the full query set (`--reps`), use:
 
-What `run_diskann_rs_split.py` does:
+- `DiskANN-playground/diskann-ann-bench/framework_entry.py`
 
-- Creates a run folder under `DiskANN-playground/extend-rabitq/ann-harness/runs/<dataset>/<run_id>/` (unless `--work-dir` is provided)
-- Writes `mode.txt = ann_bench_diskann_rs` (used by the web UI for filtering)
-- Optional: writes `cpu-bind.txt` if you pass `--cpu-bind` (record-only; does not enforce affinity)
-- Build stage:
-  - reads `train` vectors from the HDF5
-  - builds the index and saves it under `index/`
-  - writes `outputs/output.build.json`
-- Search stage:
-  - loads the saved index
-  - runs search over the full `test` query set
-  - repeats the full query set `--reps` times (harness-style loop)
-  - computes recall vs `neighbors` and latency/QPS stats
-  - writes `outputs/output.search.json`
-- Produces web-friendly summary artifacts:
-  - `outputs/summary.tsv`
-  - `outputs/details.md`
+This harness runs **diskann-rs via the ann-benchmarks adapters** in:
+
+- [ann-benchmark-epeshared/ann_benchmarks/algorithms/diskann_rs/module.py](../../ann-benchmark-epeshared/ann_benchmarks/algorithms/diskann_rs/module.py)
+
+Stages:
+
+- `--stage build`: `index_action=build_and_save`
+- `--stage search`: `index_action=load`
+- `--stage all`: build then search
+
+Outputs:
+
+- `outputs/output.build.json` (if stage includes build)
+- `outputs/output.search.json` (if stage includes search)
+- `outputs/summary.tsv`
+- `outputs/details.md`
+
+Example:
 
 ```bash
 cd ../../DiskANN-playground/diskann-ann-bench
 
-# Requires the Docker image to exist: ann-benchmarks-diskann_rs
-python run_diskann_rs_split.py \
+python3 framework_entry.py \
+  --work-dir /tmp/runs/glove-25-angular/001 \
   --hdf5 ../../ann-benchmark-epeshared/data/glove-25-angular.hdf5 \
+  --dataset glove-25-angular \
   --metric cosine \
-  --l-build 128 \
-  --max-outdegree 64 \
-  --alpha 1.2 \
+  --stage all \
+  --run-group diskann_rs_125_64_1-2 \
   -k 10 \
-  --l-search 100 \
   --reps 3
 ```
 
-If you don't have Docker build network access (pip/rustup/git clone fail), you can still run the split workflow on the host:
+Notes:
+
+- `--run-group` loads build/search parameters from:
+  - `ann-benchmark-epeshared/ann_benchmarks/algorithms/diskann_rs/config.yml`
+- You can still run without `--run-group` by specifying `--algo` and the build/search parameters explicitly.
+
+### Quantized modes (PQ / spherical)
+
+Supported algos:
+
+- `--algo fp` → `DiskANNRS` (full precision)
+- `--algo pq` → `DiskANNRS_PQ` (Product Quantization)
+- `--algo spherical` → `DiskANNRS_Spherical` (spherical quantization / extended RaBitQ)
+
+Examples:
 
 ```bash
-cd ../../ann-benchmark-epeshared/ann_benchmarks/algorithms/diskann_rs/native
-cargo build
-
-cd ../../DiskANN-playground/diskann-ann-bench
-python run_diskann_rs_split.py --runner host \
+# PQ (num_pq_chunks is provided via run-group)
+python3 framework_entry.py \
+  --work-dir /tmp/runs/tmp_sanity_small/001 \
   --hdf5 ../../tmp_sanity_small.hdf5 \
-  --metric l2 -k 10 --l-search 50 --reps 2
-```
+  --dataset tmp_sanity_small \
+  --metric cosine \
+  --stage all \
+  --run-group diskann_rs_pq_125_64_1-2_14 \
+  -k 10 --reps 2
 
-The host runner auto-creates a `diskann_rs_native.so` symlink next to the cargo-built `libdiskann_rs_native.so` and sets `PYTHONPATH` so Python can import it.
+# Spherical (nbits is provided via run-group)
+python3 framework_entry.py \
+  --work-dir /tmp/runs/tmp_sanity_small/002 \
+  --hdf5 ../../tmp_sanity_small.hdf5 \
+  --dataset tmp_sanity_small \
+  --metric cosine \
+  --stage all \
+  --run-group diskann_rs_spherical_125_64_1-2_2b \
+  -k 10 --reps 2
+```
 
 ## Quick local run + web
 
@@ -148,52 +173,216 @@ bash DiskANN-playground/diskann-ann-bench/run_local.sh --hdf5 /path/to/dataset.h
 bash DiskANN-playground/diskann-ann-bench/run_web.sh --host 127.0.0.1 --port 8081
 ```
 
+### Output layout (single run_id + cases)
+
+`run_local.sh` writes results under:
+
+- `DiskANN-playground/diskann-ann-bench/result/<dataset>/<run_id>/`
+
+Within one run:
+
+- `cases/<case_id>/...` contains per-case build/search outputs.
+- `outputs/*` at the run root is an aggregated view so the web UI can browse a run as a single unit.
+
+Example:
+
+```
+result/<dataset>/<run_id>/
+  mode.txt
+  cpu-bind.txt
+  outputs/
+    summary.tsv
+    details.md
+    output.build.json
+    output.search.json
+  cases/
+    <case_id>/
+      outputs/
+        summary.tsv
+        details.md
+        output.build.json
+        output.search.json
+```
+
+To continue a partially-finished run (skips completed cases):
+
+```bash
+bash DiskANN-playground/diskann-ann-bench/run_local.sh \
+  --resume-runid <run_id> \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric cosine \
+  --stage all \
+  --compare \
+  --run-group-pq diskann_rs_pq_125_64_1-2_14 \
+  --run-group-spherical diskann_rs_spherical_125_64_1-2_2b \
+  -k 10 --reps 2
+```
+
+### Running PQ / spherical with run_local.sh
+
+`run_local.sh` is a convenience wrapper around `framework_entry.py`.
+It builds the native extension (via cargo), sets `PYTHONPATH` so the adapter can import it, and then runs the split build/search workflow.
+
+Full precision:
+
+```bash
+bash DiskANN-playground/diskann-ann-bench/run_local.sh \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric cosine \
+  --run-group diskann_rs_125_64_1-2 \
+  -k 10 --reps 2
+```
+
+PQ:
+
+```bash
+bash DiskANN-playground/diskann-ann-bench/run_local.sh \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric cosine \
+  --run-group diskann_rs_pq_125_64_1-2_14 \
+  -k 10 --reps 2
+```
+
+Spherical:
+
+```bash
+bash DiskANN-playground/diskann-ann-bench/run_local.sh \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric cosine \
+  --run-group diskann_rs_spherical_125_64_1-2_2b \
+  -k 10 --reps 2
+```
+
+Compare mode (runs PQ + spherical in a single `run_id` and writes them as separate cases under `cases/`):
+
+```bash
+bash DiskANN-playground/diskann-ann-bench/run_local.sh \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric cosine \
+  --compare \
+  --run-group-pq diskann_rs_pq_125_64_1-2_14 \
+  --run-group-spherical diskann_rs_spherical_125_64_1-2_2b \
+  -k 10 --reps 2
+```
+
+#### Using diskann_rs/config.yml presets (recommended)
+
+If you want to avoid specifying build/search parameters on the command line, you can pull them from:
+
+- `ann-benchmark-epeshared/ann_benchmarks/algorithms/diskann_rs/config.yml`
+
+Single run-group:
+
+```bash
+bash DiskANN-playground/diskann-ann-bench/run_local.sh \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric cosine \
+  --run-group diskann_rs_125_64_1-2 \
+  -k 10 --reps 2
+```
+
+Compare with presets:
+
+```bash
+bash DiskANN-playground/diskann-ann-bench/run_local.sh \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric cosine \
+  --compare \
+  --run-group-pq diskann_rs_pq_125_64_1-2_14 \
+  --run-group-spherical diskann_rs_spherical_125_64_1-2_2b \
+  -k 10 --reps 2
+```
+
+To see all available `run_groups`, open:
+
+- `ann-benchmark-epeshared/ann_benchmarks/algorithms/diskann_rs/config.yml`
+
+#### Run all run_groups under a config `name:`
+
+Sometimes you want to sweep *every* `run_group` under a specific config entry (selected by `name:`), without listing run-group keys yourself.
+
+Single algorithm name sweep:
+
+```bash
+bash DiskANN-playground/diskann-ann-bench/run_local.sh \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric cosine \
+  --run-all \
+  --name diskann-rs-pq \
+  -k 10 --reps 2
+```
+
+Compare sweep (PQ name + spherical name):
+
+```bash
+bash DiskANN-playground/diskann-ann-bench/run_local.sh \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric cosine \
+  --compare \
+  --run-all \
+  --name-pq diskann-rs-pq \
+  --name-spherical diskann-rs-spherical \
+  -k 10 --reps 2
+```
+
 What `run_local.sh` does:
 
 - Runs `cargo build` in `ann-benchmark-epeshared/ann_benchmarks/algorithms/diskann_rs/native`
 - Chooses a CPU bind range (default `0-16`, clamped to `0-(nproc-1)` if fewer cores)
 - Uses `numactl --physcpubind=...` (preferred) or `taskset -c ...` to **actually bind** the benchmark process
-- Calls `run_diskann_rs_split.py --runner host` and passes `--cpu-bind` so the binding is written into `cpu-bind.txt`
+- Calls `framework_entry.py` and writes `cpu-bind.txt` so the binding is shown in the web UI
+
+Notes:
+
+- By default it builds the native extension in **release** mode. Override with `DISKANN_RS_NATIVE_PROFILE=debug`.
+- This is “ann-benchmarks framework” in the sense that the adapters are the same `BaseANN` implementations, but the workflow is the split harness (build/save once, then search loop), not `python run.py`.
 
 What `run_web.sh` does:
 
 - Starts the standalone web UI in `DiskANN-playground/diskann-ann-bench/web/`
-- If `RUNS_DIR` is not set, it defaults to `DiskANN-playground/extend-rabitq/ann-harness/runs`
+- If `RUNS_DIR` is not set, it defaults to `DiskANN-playground/diskann-ann-bench/result`
 - The UI shows `cpu-bind.txt` and the derived core count on the dataset/run pages
 
 ### Remote mode (ssh + sync run folder back)
 
-If your **index build/search must run on a remote machine** (e.g. server with more cores/DRAM) but you still want the results to show up in the existing web UI locally, use `--runner remote`.
-
-Assumptions:
-
-- The remote machine has the same repo layout (or you can point to it explicitly):
-  - `<remote-workspace-root>/DiskANN-playground/`
-  - `<remote-workspace-root>/ann-benchmark-epeshared/`
-- The remote host can access the dataset path you provide (or use `--remote-copy-hdf5`).
-- The remote host has `cargo` available if you use `--remote-build-native`.
+If your **index build/search must run on a remote machine** (e.g. server with more cores/DRAM) but you still want the results to show up in the existing web UI locally, use `run_remote.py`.
 
 Example:
 
 ```bash
 cd ../../DiskANN-playground/diskann-ann-bench
 
-python run_diskann_rs_split.py --runner remote \
-  --hdf5 ../../tmp_sanity_small.hdf5 \
-  --metric l2 -k 10 --l-search 50 --reps 2 \
+python3 run_remote.py \
   --remote-host myserver \
   --remote-user ubuntu \
   --ssh-opts "-i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
   --remote-workspace-root /data/work/diskann-workspace \
-  --remote-inner-runner host \
-  --remote-build-native \
-  --remote-copy-hdf5
+  --remote-copy-hdf5 \
+  -- \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric l2 \
+  --stage all \
+  --run-group diskann_rs_100_64_1-2 \
+  -k 10 --reps 2
 ```
 
 What happens:
 
-- Runs the split runner on the remote host (build + save index, then search).
-- Pulls the entire remote run folder back into your local `extend-rabitq/ann-harness/runs/<dataset>/<run-id>/` so the web UI can browse it.
+- Runs `run_local.sh` on the remote host via ssh.
+- `rsync`s the resulting run folder back into your local `diskann-ann-bench/result/<dataset>/`.
+
+### Docker mode
+
+To run the same split build/search workflow inside Docker:
+
+```bash
+bash DiskANN-playground/diskann-ann-bench/run_docker.sh \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric cosine \
+  --stage all \
+  --run-group diskann_rs_125_64_1-2 \
+  -k 10 --reps 3
+```
 
 ## Useful commands
 

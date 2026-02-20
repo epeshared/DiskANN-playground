@@ -6,6 +6,13 @@ DATASET="${DATASET:-dbpedia-openai-1000k-angular}"
 DISTANCE="${DISTANCE:-cosine}"
 SEARCH_N="${SEARCH_N:-100}"
 SEARCH_L="${SEARCH_L:-100,200,400,800}"
+# Run mode:
+# - pq_vs_spherical: current (PQ vs spherical quantization) benchmark config
+# - mem_fp: async full-precision in-memory index
+# - disk_index: disk index build+search (requires diskann-benchmark feature disk-index)
+MODE="${MODE:-pq_vs_spherical}"
+# Controls how many times each search run repeats the full query set (passed to run_dataset.py --loop).
+LOOP="${LOOP:-1}"
 REBUILD_INDEX="${REBUILD_INDEX:-false}"
 EMON_ENABLE="${EMON_ENABLE:-false}"
 
@@ -49,6 +56,8 @@ CMD=(
   --hdf5 "$HDF5_PATH"
   --dataset "$DATASET"
   --distance "$DISTANCE"
+  --mode "$MODE"
+  --loop "$LOOP"
   --search-n "$SEARCH_N"
   --search-l "$SEARCH_L"
   --rebuild-index "$REBUILD_INDEX"

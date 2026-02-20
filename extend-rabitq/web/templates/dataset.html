@@ -5,21 +5,44 @@
       <h3 style="margin:0">Dataset: {{ dataset }}</h3>
       <span class="small">{{ runs|length }} runs</span>
     </div>
+
     <div class="small" style="margin-top:8px;">
       Sort: <code>{{ sort }}</code>
       <span style="margin-left:10px;">
-        <a href="/dataset/{{ dataset | urlencode }}?sort=-timestamp,-cpu_cores,cpu_model">time↓</a>
-        · <a href="/dataset/{{ dataset | urlencode }}?sort=timestamp,-cpu_cores,cpu_model">time↑</a>
-        · <a href="/dataset/{{ dataset | urlencode }}?sort=-cpu_cores,-timestamp,cpu_model">cores↓</a>
-        · <a href="/dataset/{{ dataset | urlencode }}?sort=cpu_model,-timestamp,-cpu_cores">model↑</a>
-        · <a href="/dataset/{{ dataset | urlencode }}?sort=-cpu_model,-timestamp,-cpu_cores">model↓</a>
+        <a href="/dataset/{{ dataset | urlencode }}?sort=-timestamp,-cpu_cores,cpu_model&q={{ q | urlencode }}&mode={{ mode_filter | urlencode }}">time↓</a>
+        · <a href="/dataset/{{ dataset | urlencode }}?sort=timestamp,-cpu_cores,cpu_model&q={{ q | urlencode }}&mode={{ mode_filter | urlencode }}">time↑</a>
+        · <a href="/dataset/{{ dataset | urlencode }}?sort=-cpu_cores,-timestamp,cpu_model&q={{ q | urlencode }}&mode={{ mode_filter | urlencode }}">cores↓</a>
+        · <a href="/dataset/{{ dataset | urlencode }}?sort=cpu_model,-timestamp,-cpu_cores&q={{ q | urlencode }}&mode={{ mode_filter | urlencode }}">model↑</a>
+        · <a href="/dataset/{{ dataset | urlencode }}?sort=-cpu_model,-timestamp,-cpu_cores&q={{ q | urlencode }}&mode={{ mode_filter | urlencode }}">model↓</a>
+        · <a href="/dataset/{{ dataset | urlencode }}?sort=mode,-timestamp,-cpu_cores&q={{ q | urlencode }}&mode={{ mode_filter | urlencode }}">mode↑</a>
+        · <a href="/dataset/{{ dataset | urlencode }}?sort=-mode,-timestamp,-cpu_cores&q={{ q | urlencode }}&mode={{ mode_filter | urlencode }}">mode↓</a>
       </span>
     </div>
+
+    <form method="get" class="controls" style="margin: 8px 0 16px 0; display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+      <label>Search
+        <input type="text" name="q" value="{{ q }}" placeholder="run id / mode / cpu model" style="min-width: 260px;" />
+      </label>
+      <label>Mode
+        <select name="mode">
+          <option value="" {% if not mode_filter %}selected{% endif %}>(all)</option>
+          <option value="pq_vs_spherical" {% if mode_filter == "pq_vs_spherical" %}selected{% endif %}>pq_vs_spherical</option>
+          <option value="mem_fp" {% if mode_filter == "mem_fp" %}selected{% endif %}>mem_fp</option>
+          <option value="disk_index" {% if mode_filter == "disk_index" %}selected{% endif %}>disk_index</option>
+        </select>
+      </label>
+      <input type="hidden" name="sort" value="{{ sort }}" />
+      <button type="submit">Apply</button>
+      {% if q or mode_filter %}
+        <a href="/dataset/{{ dataset | urlencode }}?sort={{ sort | urlencode }}">Clear</a>
+      {% endif %}
+    </form>
 
     <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
       <button class="btn" id="compareBtn" type="button" disabled>点积对比 / Compare (select 2)</button>
       <span class="small" id="compareHint">Select exactly two runs.</span>
     </div>
+
     {% if runs %}
       <div style="overflow:auto; margin-top:10px; border: 1px solid var(--border); border-radius: 10px;">
         <table>
@@ -27,6 +50,7 @@
             <tr>
               <th>select</th>
               <th>timestamp</th>
+              <th>mode</th>
               <th>cpu-bind.txt</th>
               <th>cores</th>
               <th>cpu model</th>
@@ -42,6 +66,7 @@
                 <td>
                   <a href="/run/{{ dataset | urlencode }}/{{ r.id | urlencode }}">{{ r.id }}</a>
                 </td>
+                <td>{{ r.mode if r.mode else "-" }}</td>
                 <td>{{ "yes" if r.has_cpu_bind else "no" }}</td>
                 <td>{{ r.cpu_cores if r.cpu_cores is not none else "-" }}</td>
                 <td>{{ r.cpu_model if r.cpu_model else "-" }}</td>

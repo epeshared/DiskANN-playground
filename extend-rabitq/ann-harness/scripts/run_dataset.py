@@ -113,13 +113,34 @@ def main() -> int:
         choices=['squared_l2', 'inner_product', 'cosine', 'cosine_normalized'],
         help='Distance metric for PQ; spherical will downgrade cosine_normalized -> cosine',
     )
+    ap.add_argument(
+        '--mode',
+        default='pq_vs_spherical',
+        choices=['pq_vs_spherical', 'mem_fp', 'disk_index'],
+        help=(
+            'Pipeline mode. '
+            'pq_vs_spherical: PQ vs spherical quantization (current default). '
+            'mem_fp: async full-precision in-memory index. '
+            'disk_index: disk index (build+search), requires diskann-benchmark feature disk-index.'
+        ),
+    )
     ap.add_argument('--max-degree', type=int, default=64)
     ap.add_argument('--l-build', type=int, default=128)
     ap.add_argument('--alpha', type=float, default=1.2)
     ap.add_argument('--backedge-ratio', type=float, default=1.0)
     ap.add_argument('--build-threads', type=int, default=32)
     ap.add_argument('--search-threads', type=int, default=32)
-    ap.add_argument('--reps', type=int, default=3)
+    ap.add_argument(
+        '--loop',
+        '--reps',
+        dest='reps',
+        type=int,
+        default=3,
+        help=(
+            'How many times to repeat each search run over the full query set (test.fbin). '
+            'This repeats the entire search pass R times for more stable metrics (alias: --reps).'
+        ),
+    )
     ap.add_argument('--search-n', type=int, default=100)
     ap.add_argument('--recall-k', type=int, default=10)
     ap.add_argument('--search-l', type=str, default='50,100,200,400')
@@ -201,7 +222,14 @@ def main() -> int:
     if args.cpu_bind:
         (work_dir / 'cpu-bind.txt').write_text(str(args.cpu_bind).strip() + '\n', encoding='utf-8')
 
-    config_path = config_dir / 'pq-vs-spherical.json'
+    (work_dir / 'mode.txt').write_text(str(args.mode).strip() + '\n', encoding='utf-8')
+
+    config_basename = {
+        'pq_vs_spherical': 'pq-vs-spherical',
+        'mem_fp': 'mem-fp',
+        'disk_index': 'disk-index',
+    }[args.mode]
+    config_path = config_dir / f'{config_basename}.json'
     output_json = outputs_dir / 'output.json'
     output_json_build = outputs_dir / 'output.build.json'
     output_json_search = outputs_dir / 'output.search.json'
@@ -238,44 +266,105 @@ def main() -> int:
             ]
         )
 
-    run(
-        [
-            py,
-            str(scripts_dir / 'make_pq_vs_extended_rabitq_config.py'),
-            '--data-dir',
-            str(data_dir),
-            '--out',
-            str(config_path),
-            '--distance',
-            args.distance,
-            '--max-degree',
-            str(int(args.max_degree)),
-            '--l-build',
-            str(int(args.l_build)),
-            '--alpha',
-            str(float(args.alpha)),
-            '--backedge-ratio',
-            str(float(args.backedge_ratio)),
-            '--build-threads',
-            str(int(args.build_threads)),
-            '--search-threads',
-            str(int(args.search_threads)),
-            '--reps',
-            str(int(args.reps)),
-            '--search-n',
-            str(int(args.search_n)),
-            '--recall-k',
-            str(int(args.recall_k)),
-            '--search-l',
-            args.search_l,
-            '--pq-chunks',
-            str(int(args.pq_chunks)),
-            '--spherical-num-bits',
-            str(int(args.spherical_num_bits)),
-            '--transform-kind',
-            args.transform_kind,
-        ]
-    )
+    if args.mode == 'pq_vs_spherical':
+        run(
+            [
+                py,
+                str(scripts_dir / 'make_pq_vs_extended_rabitq_config.py'),
+                '--data-dir',
+                str(data_dir),
+                '--out',
+                str(config_path),
+                '--distance',
+                args.distance,
+                '--max-degree',
+                str(int(args.max_degree)),
+                '--l-build',
+                str(int(args.l_build)),
+                '--alpha',
+                str(float(args.alpha)),
+                '--backedge-ratio',
+                str(float(args.backedge_ratio)),
+                '--build-threads',
+                str(int(args.build_threads)),
+                '--search-threads',
+                str(int(args.search_threads)),
+                '--loop',
+                str(int(args.reps)),
+                '--search-n',
+                str(int(args.search_n)),
+                '--recall-k',
+                str(int(args.recall_k)),
+                '--search-l',
+                args.search_l,
+                '--pq-chunks',
+                str(int(args.pq_chunks)),
+                '--spherical-num-bits',
+                str(int(args.spherical_num_bits)),
+                '--transform-kind',
+                args.transform_kind,
+            ]
+        )
+    elif args.mode == 'mem_fp':
+        run(
+            [
+                py,
+                str(scripts_dir / 'make_async_fp_config.py'),
+                '--data-dir',
+                str(data_dir),
+                '--out',
+                str(config_path),
+                '--distance',
+                args.distance,
+                '--max-degree',
+                str(int(args.max_degree)),
+                '--l-build',
+                str(int(args.l_build)),
+                '--alpha',
+                str(float(args.alpha)),
+                '--backedge-ratio',
+                str(float(args.backedge_ratio)),
+                '--build-threads',
+                str(int(args.build_threads)),
+                '--search-threads',
+                str(int(args.search_threads)),
+                '--loop',
+                str(int(args.reps)),
+                '--search-n',
+                str(int(args.search_n)),
+                '--recall-k',
+                str(int(args.recall_k)),
+                '--search-l',
+                args.search_l,
+            ]
+        )
+    else:
+        run(
+            [
+                py,
+                str(scripts_dir / 'make_disk_index_config.py'),
+                '--data-dir',
+                str(data_dir),
+                '--out',
+                str(config_path),
+                '--distance',
+                args.distance,
+                '--max-degree',
+                str(int(args.max_degree)),
+                '--l-build',
+                str(int(args.l_build)),
+                '--build-threads',
+                str(int(args.build_threads)),
+                '--search-threads',
+                str(int(args.search_threads)),
+                '--recall-k',
+                str(int(args.recall_k)),
+                '--search-l',
+                args.search_l,
+                '--pq-chunks',
+                str(int(args.pq_chunks)),
+            ]
+        )
 
     if args.skip_run:
         print('Skip run; config written to:', str(config_path))
@@ -306,9 +395,16 @@ def main() -> int:
         job_type = job.get('type', f'job{job_index}')
         content = job.get('content', {})
         op = content.get('index_operation')
+
         source = None
         if isinstance(op, dict):
             source = op.get('source')
+        if not isinstance(source, dict):
+            # disk-index jobs use content['source'] tagged by "disk-index-source".
+            disk_source = content.get('source')
+            if isinstance(disk_source, dict) and 'disk-index-source' in disk_source:
+                source = disk_source
+
         if not isinstance(source, dict):
             # Fall back to something stable-ish.
             key_obj = {'type': job_type}
@@ -355,32 +451,42 @@ def main() -> int:
             save_prefixes.append(save_prefix)
 
             build_content = build_cfg['jobs'][i]['content']
+
+            # Most modes use async-index config schema (index_operation/source).
             build_op = build_content.get('index_operation')
-            if not isinstance(build_op, dict):
+            if isinstance(build_op, dict):
+                build_source = build_op.get('source')
+                if isinstance(build_source, dict):
+                    # Force save_path for the build phase.
+                    build_source['save_path'] = str(save_prefix)
+
+                    # Configure the search phase to load from the build artifacts.
+                    distance = build_source.get('distance')
+                    data_type = build_source.get('data_type')
+
+                    search_content = search_cfg['jobs'][i]['content']
+                    search_op = search_content.get('index_operation')
+                    if isinstance(search_op, dict):
+                        search_op['source'] = {
+                            'index-source': 'Load',
+                            'data_type': data_type,
+                            'distance': distance,
+                            'load_path': str(save_prefix),
+                        }
                 continue
 
-            build_source = build_op.get('source')
-            if not isinstance(build_source, dict):
-                continue
+            # disk-index mode uses DiskIndexOperation schema (content/source tagged by "disk-index-source").
+            disk_source = build_content.get('source')
+            if isinstance(disk_source, dict) and disk_source.get('disk-index-source') == 'Build':
+                disk_source['save_path'] = str(save_prefix)
+                data_type = disk_source.get('data_type')
 
-            # Force save_path for the build phase.
-            build_source['save_path'] = str(save_prefix)
-
-            # Configure the search phase to load from the build artifacts.
-            distance = build_source.get('distance')
-            data_type = build_source.get('data_type')
-
-            search_content = search_cfg['jobs'][i]['content']
-            search_op = search_content.get('index_operation')
-            if not isinstance(search_op, dict):
-                continue
-
-            search_op['source'] = {
-                'index-source': 'Load',
-                'data_type': data_type,
-                'distance': distance,
-                'load_path': str(save_prefix),
-            }
+                search_content = search_cfg['jobs'][i]['content']
+                search_content['source'] = {
+                    'disk-index-source': 'Load',
+                    'data_type': data_type,
+                    'load_path': str(save_prefix),
+                }
 
         return build_cfg, search_cfg, save_prefixes
 
@@ -493,17 +599,157 @@ def main() -> int:
 
         return slices
 
+    def _as_num_list(x) -> list[float]:
+        if x is None:
+            return []
+        if isinstance(x, list):
+            out: list[float] = []
+            for v in x:
+                try:
+                    out.append(float(v))
+                except Exception:
+                    continue
+            return out
+        try:
+            return [float(x)]
+        except Exception:
+            return []
+
+    def _aggregate_disk_index_outputs(outputs: list[list[dict]]) -> list[dict]:
+        """Aggregate repeated disk-index outputs into one output list.
+
+        Each element in outputs is the parsed JSON list from one invocation.
+        We merge by job index (assumes stable ordering).
+
+        For disk-index search results per L, we turn scalar metrics into lists
+        across reps so downstream summarizers can compute mean/max.
+        """
+        if not outputs:
+            return []
+        first = outputs[0]
+        out: list[dict] = copy.deepcopy(first)
+
+        # Only aggregate items that look like disk-index jobs.
+        for item_i, item in enumerate(out):
+            job_type = (((item.get('input') or {}).get('type')) if isinstance(item, dict) else None)
+            if job_type != 'disk-index':
+                continue
+
+            def _get_search_stats(obj: dict) -> dict | None:
+                res = obj.get('results') if isinstance(obj, dict) else None
+                if not isinstance(res, dict):
+                    return None
+                if isinstance(res.get('search'), dict):
+                    return res['search']
+                build = res.get('build')
+                if isinstance(build, dict) and isinstance(build.get('search'), dict):
+                    return build['search']
+                return None
+
+            search0 = _get_search_stats(item)
+            if not isinstance(search0, dict):
+                continue
+
+            results0 = search0.get('search_results_per_l')
+            if not isinstance(results0, list):
+                continue
+
+            # Build index: L -> dict of aggregated metrics.
+            by_l: dict[int, dict] = {}
+            for r in results0:
+                if not isinstance(r, dict):
+                    continue
+                l = r.get('search_l')
+                if l is None:
+                    continue
+                try:
+                    l_int = int(l)
+                except Exception:
+                    continue
+                by_l[l_int] = copy.deepcopy(r)
+                # Normalize key scalar fields to lists for aggregation.
+                for k in (
+                    'qps',
+                    'mean_latency',
+                    'p95_latency',
+                    'p999_latency',
+                    'mean_ios',
+                    'mean_io_time',
+                    'mean_cpu_time',
+                    'mean_pq_preprocess_time',
+                    'mean_comparisons',
+                    'mean_hops',
+                    'cache_hit_percentage',
+                    'recall',
+                ):
+                    by_l[l_int][k] = _as_num_list(by_l[l_int].get(k))
+
+            # Merge subsequent reps.
+            for rep_out in outputs[1:]:
+                if item_i >= len(rep_out):
+                    continue
+                rep_item = rep_out[item_i]
+                rep_search = _get_search_stats(rep_item) if isinstance(rep_item, dict) else None
+                if not isinstance(rep_search, dict):
+                    continue
+                rep_results = rep_search.get('search_results_per_l')
+                if not isinstance(rep_results, list):
+                    continue
+                for r in rep_results:
+                    if not isinstance(r, dict):
+                        continue
+                    l = r.get('search_l')
+                    if l is None:
+                        continue
+                    try:
+                        l_int = int(l)
+                    except Exception:
+                        continue
+                    if l_int not in by_l:
+                        continue
+                    for k in (
+                        'qps',
+                        'mean_latency',
+                        'p95_latency',
+                        'p999_latency',
+                        'mean_ios',
+                        'mean_io_time',
+                        'mean_cpu_time',
+                        'mean_pq_preprocess_time',
+                        'mean_comparisons',
+                        'mean_hops',
+                        'cache_hit_percentage',
+                        'recall',
+                    ):
+                        by_l[l_int][k].extend(_as_num_list(r.get(k)))
+
+            # Write back aggregated list in stable order.
+            merged = []
+            for l_int in sorted(by_l.keys()):
+                rr = by_l[l_int]
+                rr['search_l'] = l_int
+                merged.append(rr)
+
+            # Attach rep count for debugging.
+            search0['search_results_per_l'] = merged
+            search0['reps'] = int(len(outputs))
+
+        return out
+
     try:
         if args.emon_enable and shutil.which('emon') is None:
             raise FileNotFoundError(
                 "`emon` not found on PATH. If Intel SEP is installed, try `source /opt/intel/sep/sep_vars.sh`."
             )
 
+        if args.emon_enable and args.mode == 'disk_index':
+            raise ValueError('EMON slicing is not supported for --mode disk_index yet.')
+
         base_cfg = json.loads(config_path.read_text(encoding='utf-8'))
         build_cfg, search_cfg, save_prefixes = _split_build_and_search_configs(base_cfg)
 
-        build_config_path = config_dir / 'pq-vs-spherical.build.json'
-        search_config_path = config_dir / 'pq-vs-spherical.search.json'
+        build_config_path = config_dir / f'{config_basename}.build.json'
+        search_config_path = config_dir / f'{config_basename}.search.json'
         build_config_path.write_text(json.dumps(build_cfg, indent=2) + '\n', encoding='utf-8')
         search_config_path.write_text(json.dumps(search_cfg, indent=2) + '\n', encoding='utf-8')
 
@@ -527,19 +773,36 @@ def main() -> int:
                 job_type = base_cfg.get('jobs', [])[i].get('type', f'job{i}')
                 job_slug = f"{i:02d}-{job_type}"
                 job_build_cfg = _config_with_only_job(build_cfg, i)
-                job_build_config_path = config_dir / f"pq-vs-spherical.build.{job_slug}.json"
+                job_build_config_path = config_dir / f"{config_basename}.build.{job_slug}.json"
                 job_build_config_path.write_text(
                     json.dumps(job_build_cfg, indent=2) + '\n',
                     encoding='utf-8',
                 )
 
                 job_output_json_build = outputs_dir / f"output.build.{job_slug}.json"
-                run([
+                features_env = os.environ.copy()
+                if args.mode == 'disk_index':
+                    features_env['DISKANN_BENCH_FEATURES'] = 'disk-index'
+
+                print(
+                    '+',
+                    ('DISKANN_BENCH_FEATURES=disk-index' if args.mode == 'disk_index' else ''),
                     'bash',
                     str(scripts_dir / 'run_benchmark.sh'),
                     str(job_build_config_path),
                     str(job_output_json_build),
-                ])
+                )
+                subprocess.run(
+                    [
+                        'bash',
+                        str(scripts_dir / 'run_benchmark.sh'),
+                        str(job_build_config_path),
+                        str(job_output_json_build),
+                    ],
+                    check=True,
+                    text=True,
+                    env=features_env,
+                )
 
                 # Mark index as built for reuse.
                 marker = _index_marker(save_prefixes[i])
@@ -561,12 +824,45 @@ def main() -> int:
 
         if not args.emon_enable:
             # Search (no EMON) - single invocation using Load source.
-            run([
-                'bash',
-                str(scripts_dir / 'run_benchmark.sh'),
-                str(search_config_path),
-                str(output_json_search),
-            ])
+            if args.mode == 'disk_index':
+                env = os.environ.copy()
+                env['DISKANN_BENCH_FEATURES'] = 'disk-index'
+
+                rep_outputs: list[list[dict]] = []
+                reps = max(1, int(args.reps))
+                for rep_i in range(reps):
+                    rep_path = outputs_dir / f"output.search.rep{rep_i + 1}.json"
+                    print(
+                        '+',
+                        f"[disk_index loop {rep_i + 1}/{reps}]",
+                        'DISKANN_BENCH_FEATURES=disk-index bash',
+                        str(scripts_dir / 'run_benchmark.sh'),
+                        str(search_config_path),
+                        str(rep_path),
+                    )
+                    subprocess.run(
+                        ['bash', str(scripts_dir / 'run_benchmark.sh'), str(search_config_path), str(rep_path)],
+                        check=True,
+                        text=True,
+                        env=env,
+                    )
+                    rep_data = json.loads(rep_path.read_text(encoding='utf-8'))
+                    if not isinstance(rep_data, list):
+                        raise ValueError('Unexpected disk-index output JSON shape: expected list')
+                    rep_outputs.append(rep_data)
+
+                aggregated = _aggregate_disk_index_outputs(rep_outputs)
+                output_json_search.write_text(
+                    json.dumps(aggregated, indent=2) + '\n',
+                    encoding='utf-8',
+                )
+            else:
+                run([
+                    'bash',
+                    str(scripts_dir / 'run_benchmark.sh'),
+                    str(search_config_path),
+                    str(output_json_search),
+                ])
         else:
             # Search (EMON wraps each slice; 1 slice -> 1 emon.dat)
             aggregated_search_results: list[dict] = []
@@ -608,7 +904,7 @@ def main() -> int:
                         slug_parts.append(phase_slug)
                         slice_slug = '.'.join(slug_parts)
 
-                        job_config_path = config_dir / f"pq-vs-spherical.search.{slice_slug}.json"
+                        job_config_path = config_dir / f"{config_basename}.search.{slice_slug}.json"
                         job_config_path.write_text(
                             json.dumps(sliced_config, indent=2) + '\n',
                             encoding='utf-8',

@@ -45,8 +45,17 @@
   <div class="card">
     <div style="display:flex; justify-content:space-between; gap:12px; align-items:baseline;">
       <h4 style="margin:0">configs/*.json compare</h4>
-      <span class="small">(only shows diffs when both sides parse as JSON)</span>
+      <span class="small">
+        show:
+        <a class="badge" href="/compare/{{ dataset | urlencode }}?a={{ a | urlencode }}&b={{ b | urlencode }}&mode={{ mode | urlencode }}&cfg=common">common ({{ config_counts.common }})</a>
+        <a class="badge" href="/compare/{{ dataset | urlencode }}?a={{ a | urlencode }}&b={{ b | urlencode }}&mode={{ mode | urlencode }}&cfg=all">all ({{ config_counts.all }})</a>
+        <span class="small" style="margin-left:8px;">onlyA={{ config_counts.only_a }} onlyB={{ config_counts.only_b }}</span>
+      </span>
     </div>
+
+    {% if config_hint %}
+      <div class="small" style="margin-top:8px;"><span class="badge">hint</span> {{ config_hint }}</div>
+    {% endif %}
 
     {% if not config_compares or config_compares|length == 0 %}
       <div class="small" style="margin-top:10px;">No config files found under <code>configs/</code> for either run.</div>
@@ -214,6 +223,7 @@
     (function() {
       const radios = Array.from(document.querySelectorAll('input[name="mode"]'));
       const swapBtn = document.getElementById('swapBtn');
+      const cfg0 = '{{ cfg_mode }}' || 'all';
       function selectedMode() {
         const r = radios.find(x => x.checked);
         return r ? r.value : 'b_over_a';
@@ -222,7 +232,8 @@
         const mode = encodeURIComponent(selectedMode());
         const a = encodeURIComponent(aVal);
         const b = encodeURIComponent(bVal);
-        window.location.href = `/compare/{{ dataset | urlencode }}?a=${a}&b=${b}&mode=${mode}`;
+        const cfg = encodeURIComponent(cfg0);
+        window.location.href = `/compare/{{ dataset | urlencode }}?a=${a}&b=${b}&mode=${mode}&cfg=${cfg}`;
       }
       const a0 = '{{ a }}';
       const b0 = '{{ b }}';
