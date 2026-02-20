@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import html
+import io
 import json
 import os
 import re
@@ -17,7 +19,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.requests import Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markdown_it import MarkdownIt
@@ -109,6 +111,122 @@ def _read_csv(path: Path) -> tuple[list[str], list[list[str]]]:
     headers = [c.strip() for c in raw[0]]
     rows = [row for row in raw[1:] if any((c or "").strip() for c in row)]
     return (headers, rows)
+
+
+def _to_float(v: str | None) -> float | None:
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    try:
+        x = float(s)
+    except Exception:
+        return None
+    if not math.isfinite(x):
+        return None
+    return x
+
+
+def _mean_csv_col(path: Path, col_name: str) -> float | None:
+    headers, rows = _read_csv(path)
+    if not headers or not rows:
+        return None
+    try:
+        idx = headers.index(col_name)
+    except ValueError:
+        return None
+
+    vals: list[float] = []
+    for row in rows:
+        if idx >= len(row):
+            continue
+        x = _to_float(row[idx])
+        if x is not None:
+            vals.append(x)
+    if not vals:
+        return None
+    return sum(vals) / float(len(vals))
+
+
+def _fmt_float(v: float | None, digits: int = 2) -> str:
+    if v is None:
+        return ""
+    return f"{v:.{digits}f}"
+
+
+def _read_csv_dict_rows(path: Path) -> list[dict[str, str]]:
+    headers, rows = _read_csv(path)
+    if not headers or not rows:
+        return []
+    out: list[dict[str, str]] = []
+    for row in rows:
+        if len(row) < len(headers):
+            row = row + [""] * (len(headers) - len(row))
+        out.append({h: (row[i] if i < len(row) else "") for i, h in enumerate(headers)})
+    return out
+
+
+def _compare_csv_by_keys(path_a: Path, path_b: Path, key_fields: list[str]) -> dict[str, Any]:
+    rows_a = _read_csv_dict_rows(path_a)
+    rows_b = _read_csv_dict_rows(path_b)
+    if not rows_a or not rows_b:
+        return {
+            "available": False,
+            "key_fields": key_fields,
+            "rows": [],
+        }
+
+    def make_key(row: dict[str, str]) -> tuple[str, ...]:
+        return tuple((row.get(k) or "").strip() for k in key_fields)
+
+    map_a: dict[tuple[str, ...], dict[str, str]] = {}
+    map_b: dict[tuple[str, ...], dict[str, str]] = {}
+
+    for r in rows_a:
+        map_a[make_key(r)] = r
+    for r in rows_b:
+        map_b[make_key(r)] = r
+
+    all_keys = sorted(set(map_a.keys()) | set(map_b.keys()))
+    out_rows: list[dict[str, str]] = []
+
+    def _ratio_str(a: float | None, b: float | None) -> str:
+        if a is None or b is None or b == 0.0:
+            return ""
+        return _fmt_float(a / b, 3)
+
+    for key in all_keys:
+        ra = map_a.get(key, {})
+        rb = map_b.get(key, {})
+        row: dict[str, str] = {}
+        for i, k in enumerate(key_fields):
+            row[k] = key[i]
+
+        recall_a_v = _to_float(ra.get("recall_at_k"))
+        recall_b_v = _to_float(rb.get("recall_at_k"))
+        qps_a_v = _to_float(ra.get("qps_mean"))
+        qps_b_v = _to_float(rb.get("qps_mean"))
+        p99_a_v = _to_float(ra.get("lat_p99_us"))
+        p99_b_v = _to_float(rb.get("lat_p99_us"))
+
+        row["recall_a"] = _fmt_float(recall_a_v)
+        row["recall_b"] = _fmt_float(recall_b_v)
+        row["recall_ratio"] = _ratio_str(recall_a_v, recall_b_v)
+        row["qps_a"] = _fmt_float(qps_a_v)
+        row["qps_b"] = _fmt_float(qps_b_v)
+        row["qps_ratio"] = _ratio_str(qps_a_v, qps_b_v)
+        row["p99_a"] = _fmt_float(p99_a_v)
+        row["p99_b"] = _fmt_float(p99_b_v)
+        row["p99_ratio"] = _ratio_str(p99_a_v, p99_b_v)
+
+        out_rows.append(row)
+
+    return {
+        "available": True,
+        "key_fields": key_fields,
+        "rows": out_rows,
+    }
 
 
 def _reorder_table(
@@ -292,6 +410,71 @@ def create_app(settings: Settings) -> FastAPI:
                     return v or None
                 return None
         return None
+
+    def _compare_algo_rows(run_a_dir: Path, run_b_dir: Path, algo: str) -> dict[str, Any]:
+        algo_norm = (algo or "").strip().lower()
+        if algo_norm == "pq":
+            return _compare_csv_by_keys(
+                run_a_dir / "outputs" / "summary.pq.csv",
+                run_b_dir / "outputs" / "summary.pq.csv",
+                [
+                    "case",
+                    "distance",
+                    "k",
+                    "l_search",
+                    "reps",
+                    "l_build",
+                    "max_outdegree",
+                    "alpha",
+                    "num_pq_chunks",
+                    "translate_to_center",
+                    "num_centers",
+                    "max_k_means_reps",
+                    "pq_seed",
+                ],
+            )
+        if algo_norm == "spherical":
+            return _compare_csv_by_keys(
+                run_a_dir / "outputs" / "summary.spherical.csv",
+                run_b_dir / "outputs" / "summary.spherical.csv",
+                [
+                    "case",
+                    "distance",
+                    "k",
+                    "l_search",
+                    "reps",
+                    "l_build",
+                    "max_outdegree",
+                    "alpha",
+                    "nbits",
+                    "spherical_seed",
+                ],
+            )
+        raise HTTPException(status_code=400, detail="algo must be one of: pq, spherical")
+
+    def _run_meta(run_dir: Path, run_id: str) -> dict[str, Any]:
+        mode_txt = _read_text_if_exists(run_dir / "mode.txt", max_bytes=2000)
+        run_mode = (mode_txt or "").strip() or None
+
+        cpu_bind_txt = _read_text_if_exists(run_dir / "cpu-bind.txt", max_bytes=5000)
+        cpu_bind = (cpu_bind_txt or "").strip() or None
+
+        lscpu_raw = _read_text_if_exists(run_dir / "lscpu.txt", max_bytes=500_000)
+        if not lscpu_raw:
+            if lscpu_cache.get("raw") is None:
+                lscpu_cache["raw"] = _read_lscpu_raw()
+            lscpu_raw = lscpu_cache.get("raw")
+
+        cpu_model = _lscpu_model_name(lscpu_raw) if isinstance(lscpu_raw, str) and lscpu_raw.strip() else None
+        lscpu_info = _lscpu_summary(lscpu_raw) if isinstance(lscpu_raw, str) and lscpu_raw.strip() else None
+
+        return {
+            "id": run_id,
+            "mode": run_mode,
+            "cpu_bind": cpu_bind,
+            "cpu_model": cpu_model,
+            "lscpu_info": lscpu_info,
+        }
 
     default_mode = "ann_bench_diskann_rs"
 
@@ -602,6 +785,225 @@ def create_app(settings: Settings) -> FastAPI:
                     (run_id, f"/run/{urllib.parse.quote(dataset, safe='')}/{urllib.parse.quote(run_id, safe='')}"),
                 ),
             },
+        )
+
+    @app.get("/compare/{dataset}", response_class=HTMLResponse)
+    def compare_page(dataset: str, request: Request):
+        run_a = (request.query_params.get("a") or "").strip()
+        run_b = (request.query_params.get("b") or "").strip()
+        if not run_a or not run_b:
+            raise HTTPException(status_code=400, detail="Missing query parameters: a and b")
+
+        run_a_dir = _safe_join(settings.runs_dir, dataset, run_a)
+        run_b_dir = _safe_join(settings.runs_dir, dataset, run_b)
+
+        meta_a = _run_meta(run_a_dir, run_a)
+        meta_b = _run_meta(run_b_dir, run_b)
+
+        pq_cmp = _compare_algo_rows(run_a_dir, run_b_dir, "pq")
+        spherical_cmp = _compare_algo_rows(run_a_dir, run_b_dir, "spherical")
+
+        return templates.TemplateResponse(
+            "compare.html",
+            {
+                "request": request,
+                "title": f"compare {dataset}: {run_a} vs {run_b}",
+                "dataset": dataset,
+                "run_a": meta_a,
+                "run_b": meta_b,
+                "pq_cmp": pq_cmp,
+                "spherical_cmp": spherical_cmp,
+                "runs_dir": str(settings.runs_dir),
+                "breadcrumbs": _breadcrumbs(
+                    ("datasets", "/"),
+                    (dataset, f"/dataset/{urllib.parse.quote(dataset, safe='')}"),
+                    ("compare", f"/compare/{urllib.parse.quote(dataset, safe='')}?a={urllib.parse.quote(run_a, safe='')}&b={urllib.parse.quote(run_b, safe='')}"),
+                ),
+            },
+        )
+
+    @app.get("/api/compare/{dataset}/{algo}.csv")
+    def api_compare_csv(dataset: str, algo: str, a: str, b: str, ratio: str = "ab"):
+        run_a = (a or "").strip()
+        run_b = (b or "").strip()
+        if not run_a or not run_b:
+            raise HTTPException(status_code=400, detail="Missing query parameters: a and b")
+
+        ratio_mode = (ratio or "ab").strip().lower()
+        if ratio_mode not in {"ab", "ba"}:
+            raise HTTPException(status_code=400, detail="ratio must be one of: ab, ba")
+
+        run_a_dir = _safe_join(settings.runs_dir, dataset, run_a)
+        run_b_dir = _safe_join(settings.runs_dir, dataset, run_b)
+        meta_a = _run_meta(run_a_dir, run_a)
+        meta_b = _run_meta(run_b_dir, run_b)
+
+        cmp = _compare_algo_rows(run_a_dir, run_b_dir, algo)
+        if not cmp.get("available"):
+            raise HTTPException(status_code=404, detail="Comparison source CSV not found for both runs")
+
+        ratio_label = "A/B" if ratio_mode == "ab" else "B/A"
+
+        def _ratio_value(row: dict[str, str], left: str, right: str) -> str:
+            lv = _to_float(row.get(left))
+            rv = _to_float(row.get(right))
+            if ratio_mode == "ab":
+                if lv is None or rv is None or rv == 0.0:
+                    return ""
+                return _fmt_float(lv / rv, 3)
+            if lv is None or rv is None or lv == 0.0:
+                return ""
+            return _fmt_float(rv / lv, 3)
+
+        fields = [
+            "run_a",
+            "run_b",
+            "a_cpu_bind",
+            "b_cpu_bind",
+            "a_cpu_info",
+            "b_cpu_info",
+            *(cmp.get("key_fields") or []),
+            "recall_a",
+            "recall_b",
+            f"recall_ratio ({ratio_label})",
+            "qps_a",
+            "qps_b",
+            f"qps_ratio ({ratio_label})",
+            "p99_a",
+            "p99_b",
+            f"p99_ratio ({ratio_label})",
+        ]
+
+        buf = io.StringIO()
+        w = csv.DictWriter(buf, fieldnames=fields)
+        w.writeheader()
+        for r in (cmp.get("rows") or []):
+            out_row = {k: "" for k in fields}
+            out_row.update({k: r.get(k, "") for k in (cmp.get("key_fields") or [])})
+            out_row["run_a"] = run_a
+            out_row["run_b"] = run_b
+            out_row["a_cpu_bind"] = meta_a.get("cpu_bind") or ""
+            out_row["b_cpu_bind"] = meta_b.get("cpu_bind") or ""
+            out_row["a_cpu_info"] = meta_a.get("lscpu_info") or ""
+            out_row["b_cpu_info"] = meta_b.get("lscpu_info") or ""
+
+            out_row["recall_a"] = r.get("recall_a", "")
+            out_row["recall_b"] = r.get("recall_b", "")
+            out_row[f"recall_ratio ({ratio_label})"] = _ratio_value(r, "recall_a", "recall_b")
+
+            out_row["qps_a"] = r.get("qps_a", "")
+            out_row["qps_b"] = r.get("qps_b", "")
+            out_row[f"qps_ratio ({ratio_label})"] = _ratio_value(r, "qps_a", "qps_b")
+
+            out_row["p99_a"] = r.get("p99_a", "")
+            out_row["p99_b"] = r.get("p99_b", "")
+            out_row[f"p99_ratio ({ratio_label})"] = _ratio_value(r, "p99_a", "p99_b")
+
+            w.writerow(out_row)
+
+        filename = f"compare.{algo.lower()}.{run_a}.vs.{run_b}.csv"
+        return PlainTextResponse(
+            content=buf.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.get("/api/compare/{dataset}/{algo}.xlsx")
+    def api_compare_xlsx(dataset: str, algo: str, a: str, b: str, ratio: str = "ab"):
+        run_a = (a or "").strip()
+        run_b = (b or "").strip()
+        if not run_a or not run_b:
+            raise HTTPException(status_code=400, detail="Missing query parameters: a and b")
+
+        ratio_mode = (ratio or "ab").strip().lower()
+        if ratio_mode not in {"ab", "ba"}:
+            raise HTTPException(status_code=400, detail="ratio must be one of: ab, ba")
+
+        run_a_dir = _safe_join(settings.runs_dir, dataset, run_a)
+        run_b_dir = _safe_join(settings.runs_dir, dataset, run_b)
+        meta_a = _run_meta(run_a_dir, run_a)
+        meta_b = _run_meta(run_b_dir, run_b)
+
+        cmp = _compare_algo_rows(run_a_dir, run_b_dir, algo)
+        if not cmp.get("available"):
+            raise HTTPException(status_code=404, detail="Comparison source CSV not found for both runs")
+
+        ratio_label = "A/B" if ratio_mode == "ab" else "B/A"
+
+        def _ratio_value(row: dict[str, str], left: str, right: str) -> str:
+            lv = _to_float(row.get(left))
+            rv = _to_float(row.get(right))
+            if ratio_mode == "ab":
+                if lv is None or rv is None or rv == 0.0:
+                    return ""
+                return _fmt_float(lv / rv, 3)
+            if lv is None or rv is None or lv == 0.0:
+                return ""
+            return _fmt_float(rv / lv, 3)
+
+        key_fields = list(cmp.get("key_fields") or [])
+        compare_fields = [
+            *key_fields,
+            "recall_a",
+            "recall_b",
+            f"recall_ratio ({ratio_label})",
+            "qps_a",
+            "qps_b",
+            f"qps_ratio ({ratio_label})",
+            "p99_a",
+            "p99_b",
+            f"p99_ratio ({ratio_label})",
+        ]
+
+        try:
+            from openpyxl import Workbook  # type: ignore
+            from openpyxl.styles import Alignment  # type: ignore
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"openpyxl not available: {exc}")
+
+        def _multiline_kv(s: str | None) -> str:
+            raw = (s or "").strip()
+            if not raw:
+                return ""
+            parts = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+            return "\n".join(parts)
+
+        wb = Workbook()
+        ws_compare = wb.active
+        ws_compare.title = "compare"
+        ws_compare.append(compare_fields)
+
+        for r in (cmp.get("rows") or []):
+            out = {k: "" for k in compare_fields}
+            for k in key_fields:
+                out[k] = r.get(k, "")
+            out["recall_a"] = r.get("recall_a", "")
+            out["recall_b"] = r.get("recall_b", "")
+            out[f"recall_ratio ({ratio_label})"] = _ratio_value(r, "recall_a", "recall_b")
+            out["qps_a"] = r.get("qps_a", "")
+            out["qps_b"] = r.get("qps_b", "")
+            out[f"qps_ratio ({ratio_label})"] = _ratio_value(r, "qps_a", "qps_b")
+            out["p99_a"] = r.get("p99_a", "")
+            out["p99_b"] = r.get("p99_b", "")
+            out[f"p99_ratio ({ratio_label})"] = _ratio_value(r, "p99_a", "p99_b")
+            ws_compare.append([out.get(k, "") for k in compare_fields])
+
+        ws_info = wb.create_sheet("server-info")
+        ws_info.append(["field", f"A ({run_a})", f"B ({run_b})"])
+        ws_info.append(["cpu bind", meta_a.get("cpu_bind") or "", meta_b.get("cpu_bind") or ""])
+        ws_info.append(["cpu info", _multiline_kv(meta_a.get("lscpu_info")), _multiline_kv(meta_b.get("lscpu_info"))])
+        ws_info.cell(row=3, column=2).alignment = Alignment(wrap_text=True, vertical="top")
+        ws_info.cell(row=3, column=3).alignment = Alignment(wrap_text=True, vertical="top")
+
+        out = io.BytesIO()
+        wb.save(out)
+        data = out.getvalue()
+
+        filename = f"compare.{algo.lower()}.{run_a}.vs.{run_b}.{ratio_mode}.xlsx"
+        return Response(
+            content=data,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
     @app.get("/api/run/{dataset}/{run_id}/summary")

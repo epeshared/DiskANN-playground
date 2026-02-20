@@ -18,6 +18,7 @@
       <input type="hidden" name="cpu" value="{{ cpu_filter or '' }}" />
       <input type="hidden" name="cpu_bind" value="{{ cpu_bind_filter or '' }}" />
       <button class="btn" type="submit">Delete selected runs</button>
+      <button class="btn" id="compare-runs-btn" type="button">Compare selected runs</button>
     </form>
 
     {% if deleted_count and deleted_count > 0 %}
@@ -58,6 +59,7 @@
       const tbody = table.querySelector('tbody');
       const selectAll = document.getElementById('select-all-runs');
       const deleteForm = document.getElementById('delete-runs-form');
+      const compareBtn = document.getElementById('compare-runs-btn');
       const rowChecks = () => Array.from(table.querySelectorAll('tbody input[type="checkbox"][name="run_ids"]'));
 
       if (selectAll) {
@@ -90,6 +92,19 @@
           if (!window.confirm('Delete selected runs? This cannot be undone.')) {
             e.preventDefault();
           }
+        });
+      }
+
+      if (compareBtn) {
+        compareBtn.addEventListener('click', function () {
+          const selected = rowChecks().filter((cb) => cb.checked).map((cb) => cb.value);
+          if (selected.length !== 2) {
+            window.alert('Please select exactly two runs to compare.');
+            return;
+          }
+          const base = '/compare/{{ dataset | urlencode }}';
+          const url = base + '?a=' + encodeURIComponent(selected[0]) + '&b=' + encodeURIComponent(selected[1]);
+          window.location.href = url;
         });
       }
 

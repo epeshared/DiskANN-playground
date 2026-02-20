@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+{% block body %}
+  <div class="panel">
+    <div class="h2">Compare Runs</div>
+    <div class="small">Dataset: <a href="/dataset/{{ dataset | urlencode }}">{{ dataset }}</a></div>
+    <div class="actions" style="margin-top:10px">
+      <a class="btn" href="/run/{{ dataset | urlencode }}/{{ run_a.id | urlencode }}">Open A: {{ run_a.id }}</a>
+      <a class="btn" href="/run/{{ dataset | urlencode }}/{{ run_b.id | urlencode }}">Open B: {{ run_b.id }}</a>
+      <button class="btn" id="ratio-ab-btn" type="button">A/B</button>
+      <button class="btn" id="ratio-ba-btn" type="button">B/A</button>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:12px">
+    <div class="h2">CPU Info</div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:12px">
+      <div class="panel" style="margin:0">
+        <div class="h2" style="margin-top:0">A: {{ run_a.id }}</div>
+        <div class="kv">
+          <div class="k">mode</div><div><span class="badge">{{ run_a.mode or '' }}</span></div>
+          <div class="k">cpu_bind</div><div>{{ run_a.cpu_bind or '' }}</div>
+          <div class="k">cpu</div><div>{{ run_a.cpu_model or '' }}</div>
+          <div class="k">cpu info</div><div><pre style="margin:0;white-space:pre-wrap">{{ run_a.lscpu_info or '' }}</pre></div>
+        </div>
+      </div>
+      <div class="panel" style="margin:0">
+        <div class="h2" style="margin-top:0">B: {{ run_b.id }}</div>
+        <div class="kv">
+          <div class="k">mode</div><div><span class="badge">{{ run_b.mode or '' }}</span></div>
+          <div class="k">cpu_bind</div><div>{{ run_b.cpu_bind or '' }}</div>
+          <div class="k">cpu</div><div>{{ run_b.cpu_model or '' }}</div>
+          <div class="k">cpu info</div><div><pre style="margin:0;white-space:pre-wrap">{{ run_b.lscpu_info or '' }}</pre></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:12px">
+    <div class="h2">PQ Comparison (A/B)</div>
+    <div class="actions" style="margin-bottom:8px">
+      <a class="btn" id="download-pq-csv" href="/api/compare/{{ dataset | urlencode }}/pq.xlsx?a={{ run_a.id | urlencode }}&b={{ run_b.id | urlencode }}&ratio=ab">Download PQ compare.xlsx</a>
+    </div>
+    {% if pq_cmp.available %}
+      <table class="table">
+        <thead>
+          <tr>
+            {% for k in pq_cmp.key_fields %}<th>{{ k }}</th>{% endfor %}
+            <th>recall_at_k (A)</th>
+            <th>recall_at_k (B)</th>
+            <th class="ratio-head" data-a-col="recall_a" data-b-col="recall_b">recall_at_k (A/B)</th>
+            <th>qps_mean (A)</th>
+            <th>qps_mean (B)</th>
+            <th class="ratio-head" data-a-col="qps_a" data-b-col="qps_b">qps_mean (A/B)</th>
+            <th>lat_p99_us (A)</th>
+            <th>lat_p99_us (B)</th>
+            <th class="ratio-head" data-a-col="p99_a" data-b-col="p99_b">lat_p99_us (A/B)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in pq_cmp.rows %}
+            <tr>
+              {% for k in pq_cmp.key_fields %}<td>{{ r[k] }}</td>{% endfor %}
+              <td data-col="recall_a">{{ r.recall_a }}</td>
+              <td data-col="recall_b">{{ r.recall_b }}</td>
+              <td data-ratio data-a-col="recall_a" data-b-col="recall_b">{{ r.recall_ratio }}</td>
+              <td data-col="qps_a">{{ r.qps_a }}</td>
+              <td data-col="qps_b">{{ r.qps_b }}</td>
+              <td data-ratio data-a-col="qps_a" data-b-col="qps_b">{{ r.qps_ratio }}</td>
+              <td data-col="p99_a">{{ r.p99_a }}</td>
+              <td data-col="p99_b">{{ r.p99_b }}</td>
+              <td data-ratio data-a-col="p99_a" data-b-col="p99_b">{{ r.p99_ratio }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div class="small">Both runs must contain <span class="badge">summary.pq.csv</span> to compare PQ.</div>
+    {% endif %}
+  </div>
+
+  <div class="panel" style="margin-top:12px">
+    <div class="h2">Spherical Comparison (A/B)</div>
+    <div class="actions" style="margin-bottom:8px">
+      <a class="btn" id="download-spherical-csv" href="/api/compare/{{ dataset | urlencode }}/spherical.xlsx?a={{ run_a.id | urlencode }}&b={{ run_b.id | urlencode }}&ratio=ab">Download Spherical compare.xlsx</a>
+    </div>
+    {% if spherical_cmp.available %}
+      <table class="table">
+        <thead>
+          <tr>
+            {% for k in spherical_cmp.key_fields %}<th>{{ k }}</th>{% endfor %}
+            <th>recall_at_k (A)</th>
+            <th>recall_at_k (B)</th>
+            <th class="ratio-head" data-a-col="recall_a" data-b-col="recall_b">recall_at_k (A/B)</th>
+            <th>qps_mean (A)</th>
+            <th>qps_mean (B)</th>
+            <th class="ratio-head" data-a-col="qps_a" data-b-col="qps_b">qps_mean (A/B)</th>
+            <th>lat_p99_us (A)</th>
+            <th>lat_p99_us (B)</th>
+            <th class="ratio-head" data-a-col="p99_a" data-b-col="p99_b">lat_p99_us (A/B)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in spherical_cmp.rows %}
+            <tr>
+              {% for k in spherical_cmp.key_fields %}<td>{{ r[k] }}</td>{% endfor %}
+              <td data-col="recall_a">{{ r.recall_a }}</td>
+              <td data-col="recall_b">{{ r.recall_b }}</td>
+              <td data-ratio data-a-col="recall_a" data-b-col="recall_b">{{ r.recall_ratio }}</td>
+              <td data-col="qps_a">{{ r.qps_a }}</td>
+              <td data-col="qps_b">{{ r.qps_b }}</td>
+              <td data-ratio data-a-col="qps_a" data-b-col="qps_b">{{ r.qps_ratio }}</td>
+              <td data-col="p99_a">{{ r.p99_a }}</td>
+              <td data-col="p99_b">{{ r.p99_b }}</td>
+              <td data-ratio data-a-col="p99_a" data-b-col="p99_b">{{ r.p99_ratio }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div class="small">Both runs must contain <span class="badge">summary.spherical.csv</span> to compare spherical.</div>
+    {% endif %}
+  </div>
+
+  <script>
+    (function () {
+      let mode = 'ab';
+      const abBtn = document.getElementById('ratio-ab-btn');
+      const baBtn = document.getElementById('ratio-ba-btn');
+      const pqDownload = document.getElementById('download-pq-csv');
+      const sphericalDownload = document.getElementById('download-spherical-csv');
+
+      function parseNum(s) {
+        const x = parseFloat((s || '').trim());
+        return Number.isFinite(x) ? x : null;
+      }
+
+      function fmt(x) {
+        return (x === null || !Number.isFinite(x)) ? '' : x.toFixed(3);
+      }
+
+      function cellByCol(tr, col) {
+        return tr.querySelector('td[data-col="' + col + '"]');
+      }
+
+      function updateHeaders() {
+        document.querySelectorAll('th.ratio-head').forEach((th) => {
+          const txt = th.textContent || '';
+          if (txt.includes('(A/B)') || txt.includes('(B/A)')) {
+            const base = txt.replace('(A/B)', '').replace('(B/A)', '').trim();
+            th.textContent = base + ' (' + (mode === 'ab' ? 'A/B' : 'B/A') + ')';
+          }
+        });
+      }
+
+      function updateRatios() {
+        document.querySelectorAll('td[data-ratio]').forEach((td) => {
+          const tr = td.closest('tr');
+          if (!tr) return;
+          const aCol = td.getAttribute('data-a-col');
+          const bCol = td.getAttribute('data-b-col');
+          if (!aCol || !bCol) {
+            td.textContent = '';
+            return;
+          }
+          const a = parseNum((cellByCol(tr, aCol)?.textContent) || '');
+          const b = parseNum((cellByCol(tr, bCol)?.textContent) || '');
+
+          let v = null;
+          if (mode === 'ab') {
+            v = (a !== null && b !== null && b !== 0) ? (a / b) : null;
+          } else {
+            v = (a !== null && b !== null && a !== 0) ? (b / a) : null;
+          }
+          td.textContent = fmt(v);
+        });
+      }
+
+      function updateDownloadLinks() {
+        [pqDownload, sphericalDownload].forEach((a) => {
+          if (!a) return;
+          const u = new URL(a.href, window.location.origin);
+          u.searchParams.set('ratio', mode);
+          a.href = u.pathname + '?' + u.searchParams.toString();
+        });
+      }
+
+      function setMode(next) {
+        mode = next;
+        if (abBtn && baBtn) {
+          abBtn.style.filter = (mode === 'ab') ? 'brightness(1.15)' : '';
+          baBtn.style.filter = (mode === 'ba') ? 'brightness(1.15)' : '';
+        }
+        updateHeaders();
+        updateRatios();
+        updateDownloadLinks();
+      }
+
+      if (abBtn) abBtn.addEventListener('click', function () { setMode('ab'); });
+      if (baBtn) baBtn.addEventListener('click', function () { setMode('ba'); });
+
+      setMode('ab');
+    })();
+  </script>
+{% endblock %}
