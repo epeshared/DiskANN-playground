@@ -456,6 +456,11 @@ def create_app(settings: Settings) -> FastAPI:
         mode_txt = _read_text_if_exists(run_dir / "mode.txt", max_bytes=2000)
         run_mode = (mode_txt or "").strip() or None
 
+        batch_txt = _read_text_if_exists(run_dir / "batch.txt", max_bytes=50)
+        batch_norm = (batch_txt or "").strip().lower()
+        is_batch = batch_norm in {"1", "true", "yes", "y", "batch"}
+        query_mode = "batch" if is_batch else "single"
+
         cpu_bind_txt = _read_text_if_exists(run_dir / "cpu-bind.txt", max_bytes=5000)
         cpu_bind = (cpu_bind_txt or "").strip() or None
 
@@ -471,6 +476,7 @@ def create_app(settings: Settings) -> FastAPI:
         return {
             "id": run_id,
             "mode": run_mode,
+            "query_mode": query_mode,
             "cpu_bind": cpu_bind,
             "cpu_model": cpu_model,
             "lscpu_info": lscpu_info,
@@ -535,6 +541,10 @@ def create_app(settings: Settings) -> FastAPI:
         cpu_bind_filter = request.query_params.get("cpu_bind")
         cpu_bind_filter = (cpu_bind_filter.strip() if isinstance(cpu_bind_filter, str) else "")
         cpu_bind_filter_norm = cpu_bind_filter.lower()
+
+        batch_filter = request.query_params.get("batch")
+        batch_filter = (batch_filter.strip() if isinstance(batch_filter, str) else "")
+        batch_filter_norm = batch_filter.lower().strip()
         deleted = request.query_params.get("deleted")
         try:
             deleted_count = int(deleted) if deleted is not None else 0
@@ -558,12 +568,22 @@ def create_app(settings: Settings) -> FastAPI:
             cpu_bind = (cpu_bind_txt or '').strip() or None
             cpu_cores = len(_parse_cpu_bind_to_set(cpu_bind or '')) if cpu_bind else None
 
+            batch_txt = _read_text_if_exists(run_dir / "batch.txt", max_bytes=50)
+            batch_norm = (batch_txt or "").strip().lower()
+            is_batch = batch_norm in {"1", "true", "yes", "y", "batch"}
+            query_mode = "batch" if is_batch else "single"
+
             if mode_norm and (run_mode or "").strip().lower() != mode_norm:
                 continue
             if cpu_filter_norm and cpu_filter_norm not in (cpu_model or "").lower():
                 continue
             if cpu_bind_filter_norm and cpu_bind_filter_norm not in (cpu_bind or "").lower():
                 continue
+            if batch_filter_norm:
+                if batch_filter_norm in {"1", "true", "yes", "y", "batch"} and not is_batch:
+                    continue
+                if batch_filter_norm in {"0", "false", "no", "n", "single"} and is_batch:
+                    continue
 
             if q:
                 hay = " ".join([run_id, run_mode or ""]).lower()
@@ -574,6 +594,7 @@ def create_app(settings: Settings) -> FastAPI:
                 {
                     "id": run_id,
                     "mode": run_mode,
+                    "query_mode": query_mode,
                     "cpu_model": cpu_model,
                     "cpu_bind": cpu_bind,
                     "cpu_cores": cpu_cores,
@@ -599,6 +620,7 @@ def create_app(settings: Settings) -> FastAPI:
                 "mode": mode,
                 "cpu_filter": cpu_filter,
                 "cpu_bind_filter": cpu_bind_filter,
+                "batch_filter": batch_filter,
                 "default_mode": default_mode,
                 "deleted_count": deleted_count,
                 "runs_dir": str(settings.runs_dir),
@@ -619,6 +641,7 @@ def create_app(settings: Settings) -> FastAPI:
         mode = (str(form.get("mode") or "")).strip()
         cpu_filter = (str(form.get("cpu") or "")).strip()
         cpu_bind_filter = (str(form.get("cpu_bind") or "")).strip()
+        batch_filter = (str(form.get("batch") or "")).strip()
 
         deleted_count = 0
         for run_id in selected:
@@ -640,6 +663,8 @@ def create_app(settings: Settings) -> FastAPI:
             params["cpu"] = cpu_filter
         if cpu_bind_filter:
             params["cpu_bind"] = cpu_bind_filter
+        if batch_filter:
+            params["batch"] = batch_filter
         url = f"{base}?{urllib.parse.urlencode(params)}"
         return RedirectResponse(url=url, status_code=303)
 
@@ -649,6 +674,11 @@ def create_app(settings: Settings) -> FastAPI:
 
         mode_txt = _read_text_if_exists(run_dir / "mode.txt", max_bytes=2000)
         run_mode = (mode_txt or "").strip() or None
+
+        batch_txt = _read_text_if_exists(run_dir / "batch.txt", max_bytes=50)
+        batch_norm = (batch_txt or "").strip().lower()
+        is_batch = batch_norm in {"1", "true", "yes", "y", "batch"}
+        query_mode = "batch" if is_batch else "single"
 
         cpu_bind_txt = _read_text_if_exists(run_dir / "cpu-bind.txt", max_bytes=5000)
         cpu_bind = (cpu_bind_txt or '').strip() or None
@@ -769,6 +799,7 @@ def create_app(settings: Settings) -> FastAPI:
                 "dataset": dataset,
                 "run_id": run_id,
                 "mode": run_mode,
+                "query_mode": query_mode,
                 "cpu_bind": cpu_bind,
                 "cpu_cores": cpu_cores,
                 "summary": {"headers": headers, "rows": rows},
@@ -858,6 +889,8 @@ def create_app(settings: Settings) -> FastAPI:
         fields = [
             "run_a",
             "run_b",
+            "a_query_mode",
+            "b_query_mode",
             "a_cpu_bind",
             "b_cpu_bind",
             "a_cpu_info",
@@ -882,6 +915,8 @@ def create_app(settings: Settings) -> FastAPI:
             out_row.update({k: r.get(k, "") for k in (cmp.get("key_fields") or [])})
             out_row["run_a"] = run_a
             out_row["run_b"] = run_b
+            out_row["a_query_mode"] = meta_a.get("query_mode") or ""
+            out_row["b_query_mode"] = meta_b.get("query_mode") or ""
             out_row["a_cpu_bind"] = meta_a.get("cpu_bind") or ""
             out_row["b_cpu_bind"] = meta_b.get("cpu_bind") or ""
             out_row["a_cpu_info"] = meta_a.get("lscpu_info") or ""
@@ -990,10 +1025,11 @@ def create_app(settings: Settings) -> FastAPI:
 
         ws_info = wb.create_sheet("server-info")
         ws_info.append(["field", f"A ({run_a})", f"B ({run_b})"])
+        ws_info.append(["query mode", meta_a.get("query_mode") or "", meta_b.get("query_mode") or ""])
         ws_info.append(["cpu bind", meta_a.get("cpu_bind") or "", meta_b.get("cpu_bind") or ""])
         ws_info.append(["cpu info", _multiline_kv(meta_a.get("lscpu_info")), _multiline_kv(meta_b.get("lscpu_info"))])
-        ws_info.cell(row=3, column=2).alignment = Alignment(wrap_text=True, vertical="top")
-        ws_info.cell(row=3, column=3).alignment = Alignment(wrap_text=True, vertical="top")
+        ws_info.cell(row=4, column=2).alignment = Alignment(wrap_text=True, vertical="top")
+        ws_info.cell(row=4, column=3).alignment = Alignment(wrap_text=True, vertical="top")
 
         out = io.BytesIO()
         wb.save(out)

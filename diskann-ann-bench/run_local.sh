@@ -34,6 +34,8 @@ set -euo pipefail
 #   --metric {l2,euclidean,cosine,angular}
 #   --l-build N --max-outdegree N --alpha F -k N --l-search N --reps N
 #   --l-search-list 200,300,500
+#   --batch            Use ann-benchmarks batch_query path (pass all queries at once).
+#                      Set RAYON_NUM_THREADS=N to control the number of threads used.
 #
 # Algo options:
 #   --algo {fp,pq,spherical}
@@ -90,6 +92,11 @@ ALPHA=1.2
 K=100
 L_SEARCH=200
 REPS=2
+
+# Query execution mode:
+# - 0: per-query loop (algo.query for each query)
+# - 1: batch mode (algo.batch_query on all queries)
+BATCH=0
 
 NUM_PQ_CHUNKS=""
 SPHERICAL_NBITS=2
@@ -165,6 +172,8 @@ while [[ $# -gt 0 ]]; do
       L_SEARCH_LIST="$2"; shift 2 ;;
     --reps)
       REPS="$2"; shift 2 ;;
+    --batch)
+      BATCH=1; shift 1 ;;
     --num-pq-chunks)
       NUM_PQ_CHUNKS="$2"; shift 2 ;;
     --num-pq-chunks-list)
@@ -457,7 +466,7 @@ else
 fi
 
 # Compute CPU bind string and clamp if needed.
-CPU_BIND="0-31"
+# CPU_BIND="0-31"
 if command -v nproc >/dev/null 2>&1; then
   NPROC="$(nproc)"
   if [[ "$NPROC" -lt 17 ]]; then
@@ -761,11 +770,11 @@ def _write_csv(path: Path, rows, fieldnames):
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         for r in rows:
-      row = dict(r)
-      for key in PERF_2DP_FIELDS:
-        if key in row:
-          row[key] = _fmt_2dp(str(row.get(key, "")))
-      w.writerow(row)
+            row = dict(r)
+            for key in PERF_2DP_FIELDS:
+                if key in row:
+                    row[key] = _fmt_2dp(str(row.get(key, "")))
+            w.writerow(row)
 
 
 _write_csv(out_dir / "summary.pq.csv", csv_rows_pq, PQ_FIELDS)
@@ -825,6 +834,7 @@ echo "==> running framework_entry (host)"
 echo "    cpu bind: $CPU_BIND"
 echo "    metric:   $METRIC"
 echo "    fit batch size: $DISKANN_RS_FIT_BATCH_SIZE"
+echo "    query mode: $([[ "$BATCH" -eq 1 ]] && echo batch || echo per-query)"
 if [[ "$COMPARE" -eq 1 ]]; then
   echo "    mode:     compare (pq + spherical)"
 else
@@ -835,6 +845,7 @@ echo "    work dir: $WORK_DIR"
 mkdir -p "$ROOT_CASES_DIR" "$WORK_DIR/outputs"
 echo "ann_bench_diskann_rs" > "$WORK_DIR/mode.txt"
 echo "$CPU_BIND" > "$WORK_DIR/cpu-bind.txt"
+echo "$BATCH" > "$WORK_DIR/batch.txt"
 
 if command -v lscpu >/dev/null 2>&1; then
   if [[ ! -f "$WORK_DIR/lscpu.txt" ]]; then
@@ -858,6 +869,10 @@ base_args=(
   -k "$K"
   --reps "$REPS"
 )
+
+if [[ "$BATCH" -eq 1 ]]; then
+  base_args+=(--batch)
+fi
 
 if [[ "$TRANSLATE_TO_CENTER" == "true" ]]; then
   base_args+=(--translate-to-center)
@@ -931,6 +946,7 @@ run_one() {
   mkdir -p "$work_dir_full/outputs"
   echo "ann_bench_diskann_rs" > "$work_dir_full/mode.txt"
   echo "$CPU_BIND" > "$work_dir_full/cpu-bind.txt"
+  echo "$BATCH" > "$work_dir_full/batch.txt"
 
   # Make diskann_rs_native importable from the cargo output folder.
   target_subdir="debug"

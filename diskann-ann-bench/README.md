@@ -173,6 +173,14 @@ bash DiskANN-playground/diskann-ann-bench/run_local.sh --hdf5 /path/to/dataset.h
 bash DiskANN-playground/diskann-ann-bench/run_web.sh --host 127.0.0.1 --port 8081
 ```
 
+Batch query mode (uses ann-benchmarks `batch_query` path, passing all queries at once):
+
+```bash
+# By default, rayon uses all available logical CPU cores.
+# You can control the number of threads using the RAYON_NUM_THREADS environment variable.
+RAYON_NUM_THREADS=8 bash DiskANN-playground/diskann-ann-bench/run_local.sh --batch --hdf5 /path/to/dataset.hdf5
+```
+
 ### Output layout (single run_id + cases)
 
 `run_local.sh` writes results under:
@@ -190,6 +198,7 @@ Example:
 result/<dataset>/<run_id>/
   mode.txt
   cpu-bind.txt
+  batch.txt
   outputs/
     summary.tsv
     details.md
@@ -197,12 +206,19 @@ result/<dataset>/<run_id>/
     output.search.json
   cases/
     <case_id>/
+      batch.txt
       outputs/
         summary.tsv
         details.md
         output.build.json
         output.search.json
 ```
+
+Notes:
+
+- `batch.txt` is written by `run_local.sh` (both at the run root and per-case). Values:
+  - `1` → batch mode
+  - `0` (or missing file) → single-query mode
 
 To continue a partially-finished run (skips completed cases):
 

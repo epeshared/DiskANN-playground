@@ -18,6 +18,7 @@
         <div class="h2" style="margin-top:0">A: {{ run_a.id }}</div>
         <div class="kv">
           <div class="k">mode</div><div><span class="badge">{{ run_a.mode or '' }}</span></div>
+          <div class="k">query</div><div>{{ run_a.query_mode or '' }}</div>
           <div class="k">cpu_bind</div><div>{{ run_a.cpu_bind or '' }}</div>
           <div class="k">cpu</div><div>{{ run_a.cpu_model or '' }}</div>
           <div class="k">cpu info</div><div><pre style="margin:0;white-space:pre-wrap">{{ run_a.lscpu_info or '' }}</pre></div>
@@ -27,6 +28,7 @@
         <div class="h2" style="margin-top:0">B: {{ run_b.id }}</div>
         <div class="kv">
           <div class="k">mode</div><div><span class="badge">{{ run_b.mode or '' }}</span></div>
+          <div class="k">query</div><div>{{ run_b.query_mode or '' }}</div>
           <div class="k">cpu_bind</div><div>{{ run_b.cpu_bind or '' }}</div>
           <div class="k">cpu</div><div>{{ run_b.cpu_model or '' }}</div>
           <div class="k">cpu info</div><div><pre style="margin:0;white-space:pre-wrap">{{ run_b.lscpu_info or '' }}</pre></div>

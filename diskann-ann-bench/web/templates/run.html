@@ -7,6 +7,7 @@
         <div class="k">dataset</div><div><a href="/dataset/{{ dataset | urlencode }}">{{ dataset }}</a></div>
         <div class="k">run_id</div><div>{{ run_id }}</div>
         <div class="k">mode</div><div><span class="badge">{{ mode or '' }}</span></div>
+        <div class="k">query</div><div>{{ query_mode or '' }}</div>
         <div class="k">cpu_bind</div><div>{% if cpu_bind %}{{ cpu_bind }}{% if cpu_cores is not none %} <span class="small">({{ cpu_cores }} cores)</span>{% endif %}{% endif %}</div>
         {% if lscpu_info %}
         <div class="k">server info</div><div><pre style="margin:0;white-space:pre-wrap">{{ lscpu_info }}</pre></div>

@@ -8,6 +8,11 @@
       <input class="input" type="text" name="mode" value="{{ mode or default_mode }}" placeholder="cpu mode (default ann_bench_diskann_rs)" />
       <input class="input" type="text" name="cpu" value="{{ cpu_filter or '' }}" placeholder="cpu model (e.g. Xeon)" />
       <input class="input" type="text" name="cpu_bind" value="{{ cpu_bind_filter or '' }}" placeholder="cpu bind (e.g. 0-16)" />
+      <select class="input" name="batch" title="query mode">
+        <option value="" {% if not batch_filter %}selected{% endif %}>batch: all</option>
+        <option value="single" {% if (batch_filter or '')|lower == 'single' %}selected{% endif %}>single</option>
+        <option value="batch" {% if (batch_filter or '')|lower == 'batch' %}selected{% endif %}>batch</option>
+      </select>
       <button class="btn" type="submit">Apply</button>
       <a class="btn" href="/dataset/{{ dataset | urlencode }}">Reset</a>
     </form>
@@ -17,6 +22,7 @@
       <input type="hidden" name="mode" value="{{ mode or default_mode }}" />
       <input type="hidden" name="cpu" value="{{ cpu_filter or '' }}" />
       <input type="hidden" name="cpu_bind" value="{{ cpu_bind_filter or '' }}" />
+      <input type="hidden" name="batch" value="{{ batch_filter or '' }}" />
       <button class="btn" type="submit">Delete selected runs</button>
       <button class="btn" id="compare-runs-btn" type="button">Compare selected runs</button>
     </form>
@@ -33,6 +39,7 @@
           <th><input id="select-all-runs" type="checkbox" title="select all" /></th>
           <th data-sort="string" style="cursor:pointer">run_id <span class="sort-arrow"></span></th>
           <th data-sort="string" style="cursor:pointer">mode <span class="sort-arrow"></span></th>
+          <th data-sort="string" style="cursor:pointer">query <span class="sort-arrow"></span></th>
           <th data-sort="string" style="cursor:pointer">cpu <span class="sort-arrow"></span></th>
           <th data-sort="string" style="cursor:pointer">cpu_bind <span class="sort-arrow"></span></th>
         </tr>
@@ -43,6 +50,7 @@
             <td><input form="delete-runs-form" type="checkbox" name="run_ids" value="{{ r.id }}" /></td>
             <td><a href="/run/{{ dataset | urlencode }}/{{ r.id | urlencode }}">{{ r.id }}</a></td>
             <td><span class="badge {{ 'ok' if r.mode == default_mode else '' }}">{{ r.mode or '' }}</span></td>
+            <td class="small">{{ r.query_mode or '' }}</td>
             <td class="small">{{ r.cpu_model or '' }}</td>
             <td class="small">{{ r.cpu_bind or '' }}</td>
           </tr>

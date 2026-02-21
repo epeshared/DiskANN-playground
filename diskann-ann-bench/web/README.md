@@ -9,10 +9,24 @@ It reads benchmark runs under a `runs/` directory:
 - `<runs_dir>/<dataset>/<run_id>/outputs/output.build.json` (optional)
 - `<runs_dir>/<dataset>/<run_id>/outputs/output.search.json` (optional)
 - `<runs_dir>/<dataset>/<run_id>/mode.txt` (used for filtering)
+- `<runs_dir>/<dataset>/<run_id>/cpu-bind.txt` (used for filtering/display)
+- `<runs_dir>/<dataset>/<run_id>/lscpu.txt` (optional; used for CPU model/info display)
+- `<runs_dir>/<dataset>/<run_id>/batch.txt` (optional; used for query mode display/filter)
 
 Default filter:
 
 - Only shows runs whose `mode.txt` is `ann_bench_diskann_rs`.
+
+Query mode:
+
+- If `batch.txt` is truthy (`1`, `true`, `yes`, `batch`), the UI shows `query: batch`.
+- If missing or falsey (`0`, `false`, `no`), the UI shows `query: single`.
+- In batch mode, the number of threads used by the Rust native extension can be controlled via the `RAYON_NUM_THREADS` environment variable.
+
+Compare exports:
+
+- Compare `.xlsx` includes `query mode` in the `server-info` sheet.
+- Compare `.csv` includes `a_query_mode` / `b_query_mode` columns.
 
 ## Install
 
