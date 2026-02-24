@@ -25,3 +25,7 @@ dist/
 _runs/
 _smoke_index
 result/
+
+# Local secrets
+password
+proxy-conf.json

@@ -1,0 +1,7 @@
+{
+  "host": "101.43.139.29",
+  "user": "ubuntu",
+  "port": 22,
+  "remote_dir": "~/diskann-workspace",
+  "connect": "socks"
+}

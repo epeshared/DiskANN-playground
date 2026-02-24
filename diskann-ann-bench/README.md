@@ -181,6 +181,79 @@ Batch query mode (uses ann-benchmarks `batch_query` path, passing all queries at
 RAYON_NUM_THREADS=8 bash DiskANN-playground/diskann-ann-bench/run_local.sh --batch --hdf5 /path/to/dataset.hdf5
 ```
 
+## Remote run (SSH password login)
+
+`run_remote.sh` can sync the workspace to a remote machine, run `run_local.sh` there, then sync `result/` back so the local web UI can browse it.
+
+Configuration files (in `DiskANN-playground/diskann-ann-bench/`):
+
+- `remote-conf.json`: remote host/user/port/remote_dir, plus optional `connect` mode.
+- `proxy-conf.json`: optional per-remote proxy mapping (keyed by remote IP/host).
+- `password`: local file containing SSH password(s) (this file is gitignored).
+
+Local tool requirements:
+
+- `sshpass` (password auth)
+- If using proxy: `ncat` (preferred) or `nc` (netcat)
+
+Example:
+
+```bash
+cd DiskANN-playground/diskann-ann-bench
+
+# one-time: create password file (DO NOT commit it)
+printf '%s\n' '<ssh-password>' > password
+
+# run remotely (sync code + dataset, optionally setup dependencies, run, then fetch result/)
+./run_remote.sh --hdf5 /path/to/dataset.hdf5 --setup --batch --compare
+```
+
+### Proxy support
+
+`run_remote.sh` can connect via a SOCKS5 / HTTP proxy using SSH `ProxyCommand`.
+
+1) In `remote-conf.json`, set `connect`:
+
+- `auto` (default): use proxy if there is an entry for `host` in `proxy-conf.json`, otherwise direct SSH.
+- `ssh`: always direct SSH (ignore proxy-conf).
+- `socks` / `http`: force proxy (requires proxy-conf entry for this host).
+
+Alias:
+
+- `socks5`, `socket5`, and `sock5` are accepted as aliases for `socks`.
+
+Example `remote-conf.json`:
+
+```json
+{
+  "host": "101.43.139.29",
+  "user": "ubuntu",
+  "port": 22,
+  "remote_dir": "~/diskann-workspace",
+  "connect": "auto"
+}
+```
+
+2) Create `proxy-conf.json` (keyed by the remote `host` IP/name):
+
+```json
+{
+  "101.43.139.29": {
+    "type": "socks",
+    "host": "127.0.0.1",
+    "port": 1080
+  }
+}
+```
+
+3) Dry-run to verify parsing and planned commands:
+
+```bash
+./run_remote.sh --dry-run --hdf5 /path/to/dataset.hdf5 --batch --compare
+```
+
+If proxy is enabled, the script will print the resolved `ProxyCommand` (using `ncat` if available, otherwise `nc`).
+
 ### Output layout (single run_id + cases)
 
 `run_local.sh` writes results under:
