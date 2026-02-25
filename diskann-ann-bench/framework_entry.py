@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,79 @@ from ann_benchmarks.algorithms.diskann_rs.module import (
     DiskANNRS_Spherical,
 )
 from ann_benchmarks.distance import dataset_transform
+
+
+try:
+    import psutil  # type: ignore
+except Exception:  # pragma: no cover
+    psutil = None
+
+
+def _rss_bytes_self() -> int | None:
+    """Best-effort RSS (resident set size) for the current process in bytes."""
+    if psutil is not None:
+        try:
+            return int(psutil.Process().memory_info().rss)
+        except Exception:
+            pass
+
+    # Fallback: parse /proc/self/status (Linux).
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    # e.g. "VmRSS:\t  123456 kB"
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        return int(parts[1]) * 1024
+    except Exception:
+        return None
+    return None
+
+
+class _PeakRssSampler:
+    """Samples RSS in the background and tracks the max during an interval."""
+
+    def __init__(self, interval_s: float = 0.02):
+        self._interval_s = float(interval_s)
+        self._stop = threading.Event()
+        self._peak: int | None = None
+        self._thread: threading.Thread | None = None
+
+    @property
+    def peak_bytes(self) -> int | None:
+        return self._peak
+
+    def _sample_once(self) -> None:
+        v = _rss_bytes_self()
+        if v is None:
+            return
+        if self._peak is None or v > self._peak:
+            self._peak = int(v)
+
+    def __enter__(self) -> "_PeakRssSampler":
+        # Prime an initial sample so very short intervals still get a value.
+        self._sample_once()
+
+        def _run() -> None:
+            while not self._stop.is_set():
+                self._sample_once()
+                # Event-aware sleep to stop promptly.
+                self._stop.wait(self._interval_s)
+
+        self._thread = threading.Thread(target=_run, name="peak-rss-sampler", daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            try:
+                self._thread.join(timeout=1.0)
+            except Exception:
+                pass
+        # Final sample at the end of the interval.
+        self._sample_once()
 
 
 
@@ -508,13 +582,14 @@ def main() -> int:
             algo.fit(X_train)
             t_load_index1 = time.perf_counter()
 
-            latencies, ids_only = _run_queries(
-                algo=algo,
-                X_test=X_test,
-                k=int(args.k),
-                reps=int(args.reps),
-                batch=bool(args.batch),
-            )
+            with _PeakRssSampler() as rss_sampler:
+                latencies, ids_only = _run_queries(
+                    algo=algo,
+                    X_test=X_test,
+                    k=int(args.k),
+                    reps=int(args.reps),
+                    batch=bool(args.batch),
+                )
         finally:
             algo.done()
 
@@ -522,6 +597,10 @@ def main() -> int:
 
         mean_lat_s = float(sum(latencies) / max(1, len(latencies)))
         qps = float(1.0 / mean_lat_s) if mean_lat_s > 0 else 0.0
+
+        peak_rss_gib: float | None = None
+        if rss_sampler.peak_bytes is not None and rss_sampler.peak_bytes > 0:
+            peak_rss_gib = float(rss_sampler.peak_bytes) / float(1024**3)
 
         search_obj: dict[str, Any] = {
             "algo": args.algo,
@@ -535,6 +614,7 @@ def main() -> int:
             "batch": bool(args.batch),
             "n_queries": int(X_test.shape[0]),
             "recall_at_k": float(recall),
+            "peak_rss_gib": (float(peak_rss_gib) if peak_rss_gib is not None else None),
             "qps_mean": float(qps),
             "lat_mean_us": float(mean_lat_s * 1e6),
             "lat_p50_us": float(_pctl(latencies, 0.50) * 1e6),
@@ -582,6 +662,7 @@ def main() -> int:
             f"- reps: {int(args.reps)}",
             f"- batch: {bool(args.batch)}",
             f"- recall@k: {recall:.6f}",
+            f"- peak_rss_gib (query only): {(peak_rss_gib if peak_rss_gib is not None else 'n/a')}",
             f"- qps_mean: {qps:.3f}",
             f"- lat_mean_us: {search_obj['lat_mean_us']:.3f}",
             f"- lat_p99_us: {search_obj['lat_p99_us']:.3f}",

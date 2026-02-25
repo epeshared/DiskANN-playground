@@ -568,6 +568,9 @@ def create_app(settings: Settings) -> FastAPI:
             cpu_bind = (cpu_bind_txt or '').strip() or None
             cpu_cores = len(_parse_cpu_bind_to_set(cpu_bind or '')) if cpu_bind else None
 
+            memory_txt = _read_text_if_exists(run_dir / "memory.txt", max_bytes=2000)
+            memory = (memory_txt or "").strip() or None
+
             batch_txt = _read_text_if_exists(run_dir / "batch.txt", max_bytes=50)
             batch_norm = (batch_txt or "").strip().lower()
             is_batch = batch_norm in {"1", "true", "yes", "y", "batch"}
@@ -596,6 +599,7 @@ def create_app(settings: Settings) -> FastAPI:
                     "mode": run_mode,
                     "query_mode": query_mode,
                     "cpu_model": cpu_model,
+                    "memory": memory,
                     "cpu_bind": cpu_bind,
                     "cpu_cores": cpu_cores,
                     "has_summary": (
@@ -689,6 +693,7 @@ def create_app(settings: Settings) -> FastAPI:
         headers, rows = _read_tsv(run_dir / "outputs" / "summary.tsv")
 
         perf_right = [
+            "peak_rss_gib",
             "recall_at_k",
             "qps_mean",
             "lat_mean_us",

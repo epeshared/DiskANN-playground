@@ -8,6 +8,14 @@ set -euo pipefail
 # 4) 在远端执行 run_local.sh
 # 5) 将远端 result/ 目录同步回本地
 
+# Usage:
+#   ./run_remote.sh --hdf5 /path/to/dataset.hdf5 [--setup] [--dry-run] [--pq-mode disk|memory | --pq-name <algo-name>] [<run_local.sh args...>]
+#
+# Notes:
+# - Any unrecognized args are forwarded to run_local.sh on the remote.
+# - --pq-mode/--pq-name are convenience options that translate to run_local.sh's --name-pq.
+# - --pq-mode and --pq-name are mutually exclusive.
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_PLAYGROUND_DIR="$(realpath "$SCRIPT_DIR/..")"
 WORKSPACE_ROOT="$(realpath "$DEFAULT_PLAYGROUND_DIR/..")"
@@ -34,6 +42,11 @@ PLAYGROUND_DIR="$DEFAULT_PLAYGROUND_DIR"
 
 RUN_ARGS=()
 
+# Convenience options for selecting which PQ algorithm name to run on the remote.
+# These are translated to run_local.sh's existing --name-pq flag.
+PQ_MODE=""
+PQ_NAME=""
+
 LOG_DIR="$SCRIPT_DIR/_remote_logs"
 RUN_TS="$(date +%Y%m%d_%H%M%S)"
 LOG_FILE=""
@@ -56,9 +69,59 @@ while [[ $# -gt 0 ]]; do
     --playground-dir) PLAYGROUND_DIR="$2"; shift 2 ;;
     --setup) SETUP=1; shift 1 ;;
     --dry-run) DRY_RUN=1; shift 1 ;;
+    --pq-mode) PQ_MODE="$2"; shift 2 ;;
+    --pq-name) PQ_NAME="$2"; shift 2 ;;
     *) RUN_ARGS+=("$1"); shift 1 ;;
   esac
 done
+
+if [[ -n "$PQ_MODE" && -n "$PQ_NAME" ]]; then
+  echo "ERROR: --pq-mode and --pq-name are mutually exclusive" >&2
+  exit 2
+fi
+
+if [[ -n "$PQ_MODE" ]]; then
+  case "${PQ_MODE,,}" in
+    disk)
+      PQ_NAME="diskann-rs-pq-disk"
+      ;;
+    mem|memory)
+      PQ_NAME="diskann-rs-pq-memory"
+      ;;
+    *)
+      echo "ERROR: invalid --pq-mode: $PQ_MODE (expected: disk|memory)" >&2
+      exit 2
+      ;;
+  esac
+fi
+
+has_run_arg() {
+  local needle="$1"
+  local a
+  for a in "${RUN_ARGS[@]}"; do
+    if [[ "$a" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [[ -n "$PQ_NAME" ]]; then
+  # Backward compatibility: keep passing --name-pq for compare-mode flows.
+  RUN_ARGS+=("--name-pq" "$PQ_NAME")
+
+  # When user selects --pq-mode/--pq-name and doesn't provide explicit run-mode flags,
+  # default to PQ-only workflow for clearer behavior.
+  if ! has_run_arg "--compare" \
+    && ! has_run_arg "--no-compare" \
+    && ! has_run_arg "--algo" \
+    && ! has_run_arg "--name" \
+    && ! has_run_arg "--run-group" \
+    && ! has_run_arg "--run-group-pq" \
+    && ! has_run_arg "--run-group-spherical"; then
+    RUN_ARGS+=("--no-compare" "--algo" "pq" "--name" "$PQ_NAME")
+  fi
+fi
 
 load_conf() {
   local conf="$1"

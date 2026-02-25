@@ -32,6 +32,7 @@ set -euo pipefail
 #
 # Common options:
 #   --metric {l2,euclidean,cosine,angular}
+#   --cpu-bind LO-HI    Bind the host runner to CPU cores (default: 0-16; clamped).
 #   --l-build N --max-outdegree N --alpha F -k N --l-search N --reps N
 #   --l-search-list 200,300,500
 #   --batch            Use ann-benchmarks batch_query path (pass all queries at once).
@@ -47,6 +48,7 @@ set -euo pipefail
 #
 # Compare mode (runs pq + spherical in one shot):
 #   --compare --num-pq-chunks N [--spherical-nbits 2]
+#   --no-compare   Run a single algorithm path (use with --algo/--name)
 #
 # Run-all filtering (when using --run-all):
 #   --run-group-prefix-pq PREFIX
@@ -62,6 +64,9 @@ HDF5="/mnt/nvme2n1p1/xtang/ann-data/dbpedia-openai-1000k-angular.hdf5"
 # If not provided, metric will be auto-detected from HDF5 attrs['distance'].
 METRIC=""
 ALGO="fp"
+# Run mode:
+# - COMPARE=1 (default): run pq + spherical compare workflow.
+# - COMPARE=0: run a single algorithm workflow (controlled by --algo/--name/--run-group).
 COMPARE=1
 STAGE="all"
 # If not provided, a timestamp-based run_id will be generated.
@@ -79,8 +84,8 @@ AUTO_RUN_ID=0
 # Defaults are set to reproduce the dbpedia-openai-1000k-angular sweep results via config.yml presets.
 RUN_ALL=1
 NAME=""
-NAME_PQ="diskann-rs-pq"
-NAME_SPHERICAL="diskann-rs-spherical"
+NAME_PQ="diskann-rs-pq-memory"
+NAME_SPHERICAL="diskann-rs-spherical-memory"
 
 # When running --run-all (default), only execute run_groups matching these prefixes.
 RUN_GROUP_PREFIX_PQ="pq_100_32_1-2_"
@@ -97,6 +102,10 @@ REPS=2
 # - 0: per-query loop (algo.query for each query)
 # - 1: batch mode (algo.batch_query on all queries)
 BATCH=0
+
+# CPU binding for the host runner.
+# Default: 0-16 (clamped to available CPUs).
+CPU_BIND="${CPU_BIND:-0-16}"
 
 NUM_PQ_CHUNKS=""
 SPHERICAL_NBITS=2
@@ -134,6 +143,8 @@ while [[ $# -gt 0 ]]; do
       ALGO="$2"; shift 2 ;;
     --compare)
       COMPARE=1; shift 1 ;;
+    --no-compare)
+      COMPARE=0; shift 1 ;;
     --run-all)
       RUN_ALL=1; shift 1 ;;
     --name)
@@ -174,6 +185,8 @@ while [[ $# -gt 0 ]]; do
       REPS="$2"; shift 2 ;;
     --batch)
       BATCH=1; shift 1 ;;
+    --cpu-bind)
+      CPU_BIND="$2"; shift 2 ;;
     --num-pq-chunks)
       NUM_PQ_CHUNKS="$2"; shift 2 ;;
     --num-pq-chunks-list)
@@ -466,12 +479,27 @@ else
 fi
 
 # Compute CPU bind string and clamp if needed.
-# CPU_BIND="0-31"
 if command -v nproc >/dev/null 2>&1; then
   NPROC="$(nproc)"
-  if [[ "$NPROC" -lt 17 ]]; then
-    CPU_BIND="0-$((NPROC-1))"
-    echo "WARN: only $NPROC CPUs available; using CPU_BIND=$CPU_BIND" >&2
+  if [[ "$NPROC" =~ ^[0-9]+$ ]] && [[ "$NPROC" -gt 0 ]]; then
+    max_cpu="$((NPROC - 1))"
+    if [[ "$CPU_BIND" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+      lo="${BASH_REMATCH[1]}"
+      hi="${BASH_REMATCH[2]}"
+      if [[ "$lo" =~ ^[0-9]+$ ]] && [[ "$hi" =~ ^[0-9]+$ ]]; then
+        if [[ "$lo" -gt "$max_cpu" ]]; then
+          echo "WARN: CPU_BIND=$CPU_BIND starts beyond available CPUs (nproc=$NPROC); using 0-$max_cpu" >&2
+          CPU_BIND="0-$max_cpu"
+        elif [[ "$hi" -gt "$max_cpu" ]]; then
+          echo "WARN: CPU_BIND=$CPU_BIND exceeds available CPUs (nproc=$NPROC); clamping to $lo-$max_cpu" >&2
+          CPU_BIND="$lo-$max_cpu"
+        fi
+      fi
+    elif [[ "$NPROC" -lt 17 && "$CPU_BIND" == "0-16" ]]; then
+      # Backwards-compatible behavior: clamp the default range on small machines.
+      CPU_BIND="0-$max_cpu"
+      echo "WARN: only $NPROC CPUs available; using CPU_BIND=$CPU_BIND" >&2
+    fi
   fi
 fi
 
@@ -558,6 +586,7 @@ COMMON_FIELDS = [
   "k",
   "l_search",
   "reps",
+  "peak_rss_gib",
   "recall_at_k",
   "qps_mean",
   "lat_mean_us",
@@ -587,6 +616,7 @@ SPHERICAL_FIELDS = [
 ]
 
 PERF_2DP_FIELDS = {
+  "peak_rss_gib",
   "recall_at_k",
   "qps_mean",
   "lat_mean_us",
@@ -678,6 +708,7 @@ if cases_dir.is_dir():
               "k": _as_str(_get(search_obj, build_obj, "k")),
               "l_search": _as_str(_get(search_obj, build_obj, "l_search")),
               "reps": _as_str(_get(search_obj, build_obj, "reps")),
+              "peak_rss_gib": _as_str(_get(search_obj, build_obj, "peak_rss_gib")),
               "recall_at_k": _as_str(_get(search_obj, build_obj, "recall_at_k")),
               "qps_mean": _as_str(_get(search_obj, build_obj, "qps_mean")),
               "lat_mean_us": _as_str(_get(search_obj, build_obj, "lat_mean_us")),
@@ -850,6 +881,17 @@ echo "$BATCH" > "$WORK_DIR/batch.txt"
 if command -v lscpu >/dev/null 2>&1; then
   if [[ ! -f "$WORK_DIR/lscpu.txt" ]]; then
     lscpu > "$WORK_DIR/lscpu.txt" 2>/dev/null || true
+  fi
+fi
+
+# Best-effort total memory capture (for web UI display).
+if [[ ! -f "$WORK_DIR/memory.txt" ]]; then
+  mem_kb=""
+  if [[ -r /proc/meminfo ]]; then
+    mem_kb="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || true)"
+  fi
+  if [[ "$mem_kb" =~ ^[0-9]+$ ]] && command -v awk >/dev/null 2>&1; then
+    awk -v kb="$mem_kb" 'BEGIN {printf "%.2f GiB\n", kb/1024/1024}' > "$WORK_DIR/memory.txt" 2>/dev/null || true
   fi
 fi
 

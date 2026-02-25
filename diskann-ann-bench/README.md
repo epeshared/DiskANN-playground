@@ -173,6 +173,11 @@ bash DiskANN-playground/diskann-ann-bench/run_local.sh --hdf5 /path/to/dataset.h
 bash DiskANN-playground/diskann-ann-bench/run_web.sh --host 127.0.0.1 --port 8081
 ```
 
+CPU binding:
+
+- Default is `--cpu-bind 0-16` (clamped to available CPUs).
+- Override example: `bash DiskANN-playground/diskann-ann-bench/run_local.sh --cpu-bind 0-31 --hdf5 /path/to/dataset.hdf5`
+
 Batch query mode (uses ann-benchmarks `batch_query` path, passing all queries at once):
 
 ```bash
@@ -206,6 +211,36 @@ printf '%s\n' '<ssh-password>' > password
 
 # run remotely (sync code + dataset, optionally setup dependencies, run, then fetch result/)
 ./run_remote.sh --hdf5 /path/to/dataset.hdf5 --setup --batch --compare
+
+# optionally select the PQ algorithm entry
+#   --pq-mode disk   => diskann-rs-pq-disk
+#   --pq-mode memory => diskann-rs-pq-memory
+./run_remote.sh --hdf5 /path/to/dataset.hdf5 --setup --batch --pq-mode disk
+```
+
+Run modes for `run_remote.sh`:
+
+- **PQ-only mode** (recommended when you only want PQ):
+  - If you pass `--pq-mode`/`--pq-name` and do not explicitly set a run mode,
+    `run_remote.sh` now defaults to PQ-only (`--no-compare --algo pq --name <pq-name>`).
+
+```bash
+# PQ-only, disk index
+./run_remote.sh --hdf5 /path/to/dataset.hdf5 --setup --batch --pq-mode disk
+```
+
+- **Compare mode** (runs both PQ and spherical):
+  - Add `--compare` explicitly.
+
+```bash
+# Compare: PQ(disk) + spherical
+./run_remote.sh --hdf5 /path/to/dataset.hdf5 --setup --batch --compare --pq-mode disk
+```
+
+- **Force single-algo mode manually**:
+
+```bash
+./run_remote.sh --hdf5 /path/to/dataset.hdf5 --setup --batch --no-compare --algo pq --name diskann-rs-pq-disk
 ```
 
 ### Proxy support
@@ -271,6 +306,7 @@ Example:
 result/<dataset>/<run_id>/
   mode.txt
   cpu-bind.txt
+  memory.txt
   batch.txt
   outputs/
     summary.tsv
@@ -312,13 +348,59 @@ bash DiskANN-playground/diskann-ann-bench/run_local.sh \
 `run_local.sh` is a convenience wrapper around `framework_entry.py`.
 It builds the native extension (via cargo), sets `PYTHONPATH` so the adapter can import it, and then runs the split build/search workflow.
 
+Run modes:
+
+- **Compare mode** (default): runs both PQ + spherical in one `run_id`.
+- **PQ-only / single-algo mode**: add `--no-compare` and select one algorithm (`--algo`) plus one config name (`--name`) or one `--run-group`.
+
+Examples:
+
+```bash
+# PQ-only (disk), run all matching run_groups under the name
+bash DiskANN-playground/diskann-ann-bench/run_local.sh \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric angular \
+  --no-compare \
+  --algo pq \
+  --run-all \
+  --name diskann-rs-pq-disk \
+  --batch
+
+# Compare (PQ + spherical)
+bash DiskANN-playground/diskann-ann-bench/run_local.sh \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric angular \
+  --compare \
+  --run-all \
+  --name-pq diskann-rs-pq-disk \
+  --name-spherical diskann-rs-spherical-memory \
+  --batch
+```
+
 Full precision:
+
+> Note: the next three `--run-group` examples are legacy-style single-case commands.
+> With current `run_local.sh` defaults (`--compare` + `--run-all`), prefer the name-based mode examples below,
+> or explicitly switch to single-algo mode (`--no-compare`) with a non-`run-all` setup.
 
 ```bash
 bash DiskANN-playground/diskann-ann-bench/run_local.sh \
   --hdf5 /path/to/dataset.hdf5 \
   --metric cosine \
   --run-group diskann_rs_125_64_1-2 \
+  -k 10 --reps 2
+```
+
+Drop-in replacement (current style):
+
+```bash
+bash DiskANN-playground/diskann-ann-bench/run_local.sh \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric cosine \
+  --no-compare \
+  --algo fp \
+  --run-all \
+  --name diskann-rs-memory \
   -k 10 --reps 2
 ```
 
@@ -332,6 +414,19 @@ bash DiskANN-playground/diskann-ann-bench/run_local.sh \
   -k 10 --reps 2
 ```
 
+Drop-in replacement (current style):
+
+```bash
+bash DiskANN-playground/diskann-ann-bench/run_local.sh \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric cosine \
+  --no-compare \
+  --algo pq \
+  --run-all \
+  --name diskann-rs-pq-memory \
+  -k 10 --reps 2
+```
+
 Spherical:
 
 ```bash
@@ -339,6 +434,19 @@ bash DiskANN-playground/diskann-ann-bench/run_local.sh \
   --hdf5 /path/to/dataset.hdf5 \
   --metric cosine \
   --run-group diskann_rs_spherical_125_64_1-2_2b \
+  -k 10 --reps 2
+```
+
+Drop-in replacement (current style):
+
+```bash
+bash DiskANN-playground/diskann-ann-bench/run_local.sh \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric cosine \
+  --no-compare \
+  --algo spherical \
+  --run-all \
+  --name diskann-rs-spherical-memory \
   -k 10 --reps 2
 ```
 
@@ -362,11 +470,27 @@ If you want to avoid specifying build/search parameters on the command line, you
 
 Single run-group:
 
+> Note: this is also a legacy single-case `--run-group` pattern.
+> For current defaults, use the `--run-all --name ...` pattern shown below.
+
 ```bash
 bash DiskANN-playground/diskann-ann-bench/run_local.sh \
   --hdf5 /path/to/dataset.hdf5 \
   --metric cosine \
   --run-group diskann_rs_125_64_1-2 \
+  -k 10 --reps 2
+```
+
+Drop-in replacement (current style):
+
+```bash
+bash DiskANN-playground/diskann-ann-bench/run_local.sh \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric cosine \
+  --no-compare \
+  --algo fp \
+  --run-all \
+  --name diskann-rs-memory \
   -k 10 --reps 2
 ```
 
@@ -397,7 +521,7 @@ bash DiskANN-playground/diskann-ann-bench/run_local.sh \
   --hdf5 /path/to/dataset.hdf5 \
   --metric cosine \
   --run-all \
-  --name diskann-rs-pq \
+  --name diskann-rs-pq-memory \
   -k 10 --reps 2
 ```
 
@@ -409,8 +533,8 @@ bash DiskANN-playground/diskann-ann-bench/run_local.sh \
   --metric cosine \
   --compare \
   --run-all \
-  --name-pq diskann-rs-pq \
-  --name-spherical diskann-rs-spherical \
+  --name-pq diskann-rs-pq-memory \
+  --name-spherical diskann-rs-spherical-memory \
   -k 10 --reps 2
 ```
 
@@ -438,6 +562,9 @@ If your **index build/search must run on a remote machine** (e.g. server with mo
 
 Example:
 
+> Note: this forwards a single `--run-group` case.
+> If your remote `run_local.sh` uses default compare/sweep mode, prefer forwarding `--no-compare` + name-based args.
+
 ```bash
 cd ../../DiskANN-playground/diskann-ann-bench
 
@@ -455,6 +582,28 @@ python3 run_remote.py \
   -k 10 --reps 2
 ```
 
+Drop-in replacement (current style):
+
+```bash
+cd ../../DiskANN-playground/diskann-ann-bench
+
+python3 run_remote.py \
+  --remote-host myserver \
+  --remote-user ubuntu \
+  --ssh-opts "-i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
+  --remote-workspace-root /data/work/diskann-workspace \
+  --remote-copy-hdf5 \
+  -- \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric l2 \
+  --stage all \
+  --no-compare \
+  --algo fp \
+  --run-all \
+  --name diskann-rs-memory \
+  -k 10 --reps 2
+```
+
 What happens:
 
 - Runs `run_local.sh` on the remote host via ssh.
@@ -464,12 +613,29 @@ What happens:
 
 To run the same split build/search workflow inside Docker:
 
+> Note: this is a legacy single-case `--run-group` example.
+> For current defaults, prefer name-based sweep mode (or explicitly switch to single-algo mode).
+
 ```bash
 bash DiskANN-playground/diskann-ann-bench/run_docker.sh \
   --hdf5 /path/to/dataset.hdf5 \
   --metric cosine \
   --stage all \
   --run-group diskann_rs_125_64_1-2 \
+  -k 10 --reps 3
+```
+
+Drop-in replacement (current style):
+
+```bash
+bash DiskANN-playground/diskann-ann-bench/run_docker.sh \
+  --hdf5 /path/to/dataset.hdf5 \
+  --metric cosine \
+  --stage all \
+  --no-compare \
+  --algo fp \
+  --run-all \
+  --name diskann-rs-memory \
   -k 10 --reps 3
 ```
 

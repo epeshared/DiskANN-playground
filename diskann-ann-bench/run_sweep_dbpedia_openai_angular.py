@@ -222,6 +222,21 @@ def main() -> int:
     work_dir.joinpath("mode.txt").write_text("ann_bench_diskann_rs\n", encoding="utf-8")
     work_dir.joinpath("cpu-bind.txt").write_text("0-16\n", encoding="utf-8")
 
+    # Best-effort total memory capture (for web UI display).
+    try:
+        mem_total_kb: int | None = None
+        for ln in Path("/proc/meminfo").read_text(encoding="utf-8", errors="replace").splitlines():
+            if ln.startswith("MemTotal:"):
+                parts = ln.split()
+                if len(parts) >= 2 and parts[1].isdigit():
+                    mem_total_kb = int(parts[1])
+                break
+        if mem_total_kb is not None:
+            mem_gib = float(mem_total_kb) / 1024.0 / 1024.0
+            work_dir.joinpath("memory.txt").write_text(f"{mem_gib:.2f} GiB\n", encoding="utf-8")
+    except Exception:
+        pass
+
     pq_chunks = [int(x) for x in str(args.pq_chunks).split(",") if x.strip()]
     l_search_list = [int(x) for x in str(args.l_search_list).split(",") if x.strip()]
 

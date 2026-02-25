@@ -41,6 +41,7 @@
           <th data-sort="string" style="cursor:pointer">mode <span class="sort-arrow"></span></th>
           <th data-sort="string" style="cursor:pointer">query <span class="sort-arrow"></span></th>
           <th data-sort="string" style="cursor:pointer">cpu <span class="sort-arrow"></span></th>
+          <th data-sort="string" style="cursor:pointer">memory <span class="sort-arrow"></span></th>
           <th data-sort="string" style="cursor:pointer">cpu_bind <span class="sort-arrow"></span></th>
         </tr>
       </thead>
@@ -52,6 +53,7 @@
             <td><span class="badge {{ 'ok' if r.mode == default_mode else '' }}">{{ r.mode or '' }}</span></td>
             <td class="small">{{ r.query_mode or '' }}</td>
             <td class="small">{{ r.cpu_model or '' }}</td>
+            <td class="small">{{ r.memory or '' }}</td>
             <td class="small">{{ r.cpu_bind or '' }}</td>
           </tr>
         {% endfor %}
