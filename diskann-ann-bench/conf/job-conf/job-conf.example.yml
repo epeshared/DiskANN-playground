@@ -13,7 +13,11 @@ hdf5: /mnt/nvme2n1p1/xtang/ann-data/dbpedia-openai-1000k-angular.hdf5
 metric: ""
 
 # Which stages to run.
-# Allowed: all (build+search), build (only build+save), search (only load+search; requires run_id/resume_runid or index_dir).
+# Allowed:
+# - all:    build+search
+# - build:  build index only (no search)
+# - search: load+search only (requires run_id/resume_runid or index_dir)
+# - native: compile the Rust native extension only (cargo build), then exit
 stage: all
 
 # Run folder id under runs_dir/<dataset>/<run_id>.

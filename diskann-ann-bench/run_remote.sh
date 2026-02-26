@@ -23,7 +23,9 @@ WORKSPACE_ROOT="$(realpath "$DEFAULT_PLAYGROUND_DIR/..")"
 
 CONF_DIR="$SCRIPT_DIR/conf"
 REMOTE_CONF="$CONF_DIR/remote-conf.yml"
-JOB_CONF="$CONF_DIR/job-conf.yml"
+# Optional override: set this to an absolute path or a path relative to CONF_DIR.
+# If empty, the script will auto-pick conf/job-conf.(yml|yaml|json|toml).
+JOB_CONF=""
 PASSWORD_FILE="$CONF_DIR/password"
 PROXY_CONF="$CONF_DIR/proxy-conf.yml"
 
@@ -98,9 +100,27 @@ pick_conf_file() {
 }
 
 REMOTE_CONF="$(pick_conf_file remote-conf)"
-JOB_CONF="$(pick_conf_file job-conf)"
+if [[ -n "$JOB_CONF" ]]; then
+  # Interpret relative paths as relative to the selected CONF_DIR.
+  case "$JOB_CONF" in
+    /*|~/*) : ;;
+    *) JOB_CONF="$CONF_DIR/$JOB_CONF" ;;
+  esac
+  if [[ ! -f "$JOB_CONF" ]]; then
+    echo "ERROR: specified JOB_CONF not found: $JOB_CONF" >&2
+    echo "Hint: set JOB_CONF to an absolute path or a path relative to CONF_DIR=$CONF_DIR" >&2
+    exit 2
+  fi
+else
+  JOB_CONF="$(pick_conf_file job-conf)"
+fi
 PASSWORD_FILE="$CONF_DIR/password"
 PROXY_CONF="$(pick_conf_file proxy-conf)"
+
+echo "==> Using conf dir: $CONF_DIR" >&2
+echo "==> Using remote conf: $REMOTE_CONF" >&2
+echo "==> Using job conf: $JOB_CONF" >&2
+echo "==> Using proxy conf: $PROXY_CONF" >&2
 
 load_remote_conf() {
   local conf="$1"
@@ -193,6 +213,7 @@ def gb(key, default=False) -> str:
 
 print(g("hdf5"))
 print(g("remote_hdf5_dir"))
+print(g("stage"))
 print(gb("remote_setup", False))
 print(gb("remote_dry_run", False))
 PY
@@ -237,18 +258,25 @@ esac
 mapfile -t _jobconf < <(load_job_conf_for_remote "$JOB_CONF")
 HDF5="${_jobconf[0]:-}"
 REMOTE_HDF5_DIR="${_jobconf[1]:-}"
-SETUP="${_jobconf[2]:-0}"
-DRY_RUN="${_jobconf[3]:-0}"
+STAGE="${_jobconf[2]:-}"
+SETUP="${_jobconf[3]:-0}"
+DRY_RUN="${_jobconf[4]:-0}"
 
-if [[ -z "$HDF5" ]]; then
-  echo "ERROR: missing 'hdf5' in $JOB_CONF" >&2
-  exit 1
+STAGE="${STAGE,,}"
+
+HDF5_NAME=""
+REMOTE_HDF5=""
+if [[ "$STAGE" != "native" ]]; then
+  if [[ -z "$HDF5" ]]; then
+    echo "ERROR: missing 'hdf5' in $JOB_CONF" >&2
+    exit 1
+  fi
+  if [[ ! -f "$HDF5" ]]; then
+    echo "ERROR: Local HDF5 file not found: $HDF5" >&2
+    exit 1
+  fi
+  HDF5_NAME="$(basename "$HDF5")"
 fi
-if [[ ! -f "$HDF5" ]]; then
-  echo "ERROR: Local HDF5 file not found: $HDF5" >&2
-  exit 1
-fi
-HDF5_NAME="$(basename "$HDF5")"
 
 # Resolve remote HDF5 destination.
 # If remote_hdf5_dir is relative, interpret it as relative to REMOTE_DIR.
@@ -261,7 +289,9 @@ else
   esac
 fi
 REMOTE_HDF5_DIR="${REMOTE_HDF5_DIR%/}"
-REMOTE_HDF5="$REMOTE_HDF5_DIR/$HDF5_NAME"
+if [[ -n "$HDF5_NAME" ]]; then
+  REMOTE_HDF5="$REMOTE_HDF5_DIR/$HDF5_NAME"
+fi
 
 if [[ ! -f "$PASSWORD_FILE" ]]; then
   echo "ERROR: password file not found: $PASSWORD_FILE" >&2
@@ -369,7 +399,7 @@ mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/${HOST}_${RUN_TS}.log"
 echo "==> remote output log: $LOG_FILE" >&2
 
-if [[ -z "$HDF5" ]]; then
+if [[ "$STAGE" != "native" && -z "$HDF5" ]]; then
   echo "ERROR: missing 'hdf5' in $JOB_CONF" >&2
   exit 1
 fi
@@ -550,10 +580,42 @@ run_ssh_stream() {
     run_ssh "$remote_cmd"
     return 0
   fi
+  {
+    echo "==> [Local] ssh $USER@$HOST: $remote_cmd"
+  } | tee -a "$LOG_FILE" >&2
+
+  local ssh_rc=0
+  local awk_rc=0
+  local tee_rc=0
+  local pipeline_rc=0
+
   # Force line-by-line flush in awk so local output updates immediately.
+  set +e
   "${clean_env[@]}" sshpass -p "$PASS" ssh "${SSH_OPTS[@]}" "$USER@$HOST" "$remote_cmd" 2>&1 \
     | awk -v p="[$HOST] " '{print p $0; fflush();}' \
     | tee -a "$LOG_FILE" >&2
+  pipeline_rc=$?
+  local -a ps
+  ps=("${PIPESTATUS[@]}")
+  ssh_rc="${ps[0]:-$pipeline_rc}"
+  awk_rc="${ps[1]:-0}"
+  tee_rc="${ps[2]:-0}"
+  set -e
+
+  if [[ "$ssh_rc" -ne 0 ]]; then
+    {
+      echo "ERROR: ssh command failed (rc=$ssh_rc)"
+      echo "ERROR: remote cmd: $remote_cmd"
+    } | tee -a "$LOG_FILE" >&2
+    return "$ssh_rc"
+  fi
+  if [[ "$awk_rc" -ne 0 || "$tee_rc" -ne 0 ]]; then
+    {
+      echo "ERROR: logging pipeline failed (awk_rc=$awk_rc tee_rc=$tee_rc)"
+      echo "ERROR: remote cmd: $remote_cmd"
+    } | tee -a "$LOG_FILE" >&2
+    return 1
+  fi
 }
 
 run_ssh_stream_tty() {
@@ -569,9 +631,42 @@ run_ssh_stream_tty() {
     printf ' %q %q\n' "${USER}@${HOST}" "${remote_cmd}" >&2
     return 0
   fi
+
+  {
+    echo "==> [Local] ssh -tt $USER@$HOST: $remote_cmd"
+  } | tee -a "$LOG_FILE" >&2
+
+  local ssh_rc=0
+  local awk_rc=0
+  local tee_rc=0
+  local pipeline_rc=0
+
+  set +e
   "${clean_env[@]}" sshpass -p "$PASS" ssh -tt "${SSH_OPTS[@]}" "$USER@$HOST" "$remote_cmd" 2>&1 \
     | awk -v p="[$HOST] " '{print p $0; fflush();}' \
     | tee -a "$LOG_FILE" >&2
+  pipeline_rc=$?
+  local -a ps
+  ps=("${PIPESTATUS[@]}")
+  ssh_rc="${ps[0]:-$pipeline_rc}"
+  awk_rc="${ps[1]:-0}"
+  tee_rc="${ps[2]:-0}"
+  set -e
+
+  if [[ "$ssh_rc" -ne 0 ]]; then
+    {
+      echo "ERROR: ssh -tt command failed (rc=$ssh_rc)"
+      echo "ERROR: remote cmd: $remote_cmd"
+    } | tee -a "$LOG_FILE" >&2
+    return "$ssh_rc"
+  fi
+  if [[ "$awk_rc" -ne 0 || "$tee_rc" -ne 0 ]]; then
+    {
+      echo "ERROR: logging pipeline failed (awk_rc=$awk_rc tee_rc=$tee_rc)"
+      echo "ERROR: remote cmd: $remote_cmd"
+    } | tee -a "$LOG_FILE" >&2
+    return 1
+  fi
 }
 
 rsync_ssh_rsh() {
@@ -616,6 +711,37 @@ run_rsync_dir() {
     --partial \
     --timeout=60 \
     --filter=':- .gitignore' --exclude='.git' \
+    -e "$rsh" \
+    "$src/" "$USER@$HOST:$dest/"
+}
+
+# ann-benchmark-epeshared contains vendored Rust sources (native/vendor/) which
+# include their own .gitignore files. If we use rsync's ":- .gitignore" merge,
+# rsync may accidentally exclude files Cargo expects (breaking checksum checks).
+# So for this tree, prefer explicit excludes over recursive .gitignore honoring.
+run_rsync_ann_bench_dir() {
+  local src="$1"
+  local dest="$2"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    local rsh
+    rsh="$(rsync_ssh_rsh)"
+    echo "[dry-run] rsync -e: $rsh" >&2
+    echo "[dry-run] rsync dir: $src/ -> $USER@$HOST:$dest/ (explicit excludes; includes vendor/)" >&2
+    return 0
+  fi
+  local rsh
+  rsh="$(rsync_ssh_rsh)"
+  "${clean_env[@]}" sshpass -p "$PASS" rsync -avz \
+    --info=progress2 \
+    --partial \
+    --timeout=60 \
+    --exclude='.git' \
+    --exclude='data/' \
+    --exclude='results/' \
+    --exclude='venv/' \
+    --exclude='.idea/' \
+    --exclude='**/__pycache__/' \
+    --exclude='**/*.pyc' \
     -e "$rsh" \
     "$src/" "$USER@$HOST:$dest/"
 }
@@ -685,7 +811,11 @@ PY
 }
 
 echo "==> Creating remote directories..."
-run_ssh_stream "mkdir -p $REMOTE_DIR $REMOTE_HDF5_DIR $REMOTE_DIR/DiskANN-playground/diskann-ann-bench/conf"
+if [[ "$STAGE" == "native" ]]; then
+  run_ssh_stream "mkdir -p $REMOTE_DIR $REMOTE_DIR/DiskANN-playground/diskann-ann-bench/conf"
+else
+  run_ssh_stream "mkdir -p $REMOTE_DIR $REMOTE_HDF5_DIR $REMOTE_DIR/DiskANN-playground/diskann-ann-bench/conf"
+fi
 
 sync_dir() {
   local src="$1"
@@ -698,18 +828,25 @@ sync_dir() {
 
 # 1) 同步 DiskANN-rs 和 ann-benchmark-epeshared
 sync_dir "$DISKANN_DIR" "$REMOTE_DIR/DiskANN-rs"
-sync_dir "$ANN_BENCH_DIR" "$REMOTE_DIR/ann-benchmark-epeshared"
+echo "==> Syncing $ANN_BENCH_DIR to $USER@$HOST:$REMOTE_DIR/ann-benchmark-epeshared"
+run_rsync_ann_bench_dir "$ANN_BENCH_DIR" "$REMOTE_DIR/ann-benchmark-epeshared"
 
 # 2) 同步 DiskANN-playground (包含 diskann-ann-bench)
 sync_dir "$PLAYGROUND_DIR" "$REMOTE_DIR/DiskANN-playground"
 
 # 3) 同步 HDF5 文件
-echo "==> Syncing HDF5 file $HDF5 to $USER@$HOST:$REMOTE_HDF5"
-run_rsync_file "$HDF5" "$REMOTE_HDF5"
+if [[ "$STAGE" == "native" ]]; then
+  echo "==> Skipping HDF5 sync (stage=native)" >&2
+else
+  echo "==> Syncing HDF5 file $HDF5 to $USER@$HOST:$REMOTE_HDF5"
+  run_rsync_file "$HDF5" "$REMOTE_HDF5"
+fi
 
 # 3.5) Generate+sync remote job conf (not included by dir rsync due to .gitignore)
+# Use a unique remote filename per run to avoid rsync "same size+mtime" short-circuiting
+# and to avoid cross-run overwrites when multiple jobs target the same host.
 JOB_CONF_REMOTE_LOCAL="$LOG_DIR/job-conf.remote.json"
-JOB_CONF_REMOTE_ON_REMOTE="/tmp/diskann-ann-bench/job-conf.remote.json"
+JOB_CONF_REMOTE_ON_REMOTE="/tmp/diskann-ann-bench/job-conf.remote.${RUN_TS}.json"
 echo "==> Generating remote job conf: $JOB_CONF_REMOTE_LOCAL (hdf5=$REMOTE_HDF5)" >&2
 make_remote_job_conf "$JOB_CONF" "$JOB_CONF_REMOTE_LOCAL" "$REMOTE_HDF5" >/dev/null
 echo "==> Ensuring remote temp dir exists: /tmp/diskann-ann-bench" >&2
@@ -717,10 +854,17 @@ run_ssh_stream "mkdir -p /tmp/diskann-ann-bench"
 echo "==> Syncing remote job conf to $USER@$HOST:$JOB_CONF_REMOTE_ON_REMOTE" >&2
 run_rsync_file "$JOB_CONF_REMOTE_LOCAL" "$JOB_CONF_REMOTE_ON_REMOTE"
 
+echo "==> Verifying remote job conf (head): $JOB_CONF_REMOTE_ON_REMOTE" >&2
+run_ssh_stream_tty "echo '==> [Remote] job-conf.remote.json (head)'; head -n 60 $JOB_CONF_REMOTE_ON_REMOTE"
+
 # 6) 远端环境部署
 if [[ "$SETUP" -eq 1 ]]; then
   echo "==> Running remote setup script..."
-  run_ssh_stream_tty "bash $REMOTE_DIR/DiskANN-playground/diskann-ann-bench/setup_remote.sh $REMOTE_DIR"
+  if [[ "$STAGE" == "build" || "$STAGE" == "native" ]]; then
+    run_ssh_stream_tty "bash $REMOTE_DIR/DiskANN-playground/diskann-ann-bench/setup_remote.sh $REMOTE_DIR --mode build"
+  else
+    run_ssh_stream_tty "bash $REMOTE_DIR/DiskANN-playground/diskann-ann-bench/setup_remote.sh $REMOTE_DIR"
+  fi
 fi
 
 echo "==> Ensuring DiskANN-rs is vendored under ann-benchmark third_party/..."
@@ -735,8 +879,12 @@ else
 fi"
 
 # 4) 在远端执行 run_local.sh
-echo "==> Executing run_local.sh on remote..."
-run_ssh_stream_tty "source \$HOME/.cargo/env || true; source $REMOTE_DIR/.venv/bin/activate 2>/dev/null || true; export PYTHONUNBUFFERED=1; cd $REMOTE_DIR/DiskANN-playground/diskann-ann-bench; bash run_local.sh --conf /tmp/diskann-ann-bench/job-conf.remote.json"
+echo "==> Executing run_local.sh on remote (conf=$JOB_CONF_REMOTE_ON_REMOTE)..."
+if [[ "$STAGE" == "build" || "$STAGE" == "native" ]]; then
+  run_ssh_stream_tty "source \$HOME/.cargo/env || true; export PYTHONUNBUFFERED=1; cd $REMOTE_DIR/DiskANN-playground/diskann-ann-bench; bash run_local.sh --conf $JOB_CONF_REMOTE_ON_REMOTE"
+else
+  run_ssh_stream_tty "source \$HOME/.cargo/env || true; source $REMOTE_DIR/.venv/bin/activate 2>/dev/null || true; export PYTHONUNBUFFERED=1; cd $REMOTE_DIR/DiskANN-playground/diskann-ann-bench; bash run_local.sh --conf $JOB_CONF_REMOTE_ON_REMOTE"
+fi
 
 # 5) 将远端结果同步回本地
 echo "==> Fetching results back to local..."

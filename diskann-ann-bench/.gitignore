@@ -42,4 +42,9 @@ conf/job-conf.yml
 conf/job-conf.yaml
 conf/job-conf.toml
 
+# Optional custom job conf copies (keep templates tracked; ignore edited copies)
+conf/job-conf.remote-build-pq-memory.yml
+conf/job-conf.remote-build-pq-memory.yaml
+conf/job-conf.remote-build-pq-memory.toml
+
 _remote_logs

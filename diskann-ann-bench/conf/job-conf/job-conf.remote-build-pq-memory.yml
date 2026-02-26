@@ -1,0 +1,71 @@
+# Remote build-only job config: build DiskANN-RS PQ (memory) presets
+#
+# Target preset in:
+#   ann-benchmark-epeshared/ann_benchmarks/algorithms/diskann_rs/config.yml
+#     module: ann_benchmarks.algorithms.diskann_rs
+#     name:   diskann-rs-pq-memory
+#
+# How to use with run_remote.sh:
+#   1) Copy this file to conf/job-conf.yml (run_remote.sh auto-picks conf/job-conf.(yml|yaml|json|toml))
+#      cp conf/job-conf.remote-build-pq-memory.example.yml conf/job-conf.yml
+#   2) Edit hdf5 + remote_hdf5_dir as needed
+#   3) ./run_remote.sh
+
+# (required) Local path to the dataset .hdf5 file.
+hdf5: /mnt/nvme2n1p1/xtang/ann-data/dbpedia-openai-1000k-angular.hdf5
+
+# Optional distance/metric override. Empty => auto-detect from HDF5 attrs['distance'].
+metric: ""
+
+# Only build index artifacts (no search).
+stage: build
+
+# Make the run_id stable so remote runs are easy to find/reuse.
+# You can change this per experiment.
+run_id: remote_build_diskann_rs_pq_memory
+resume_runid: ""
+index_dir: ""
+
+# No cleanup by default (since this is build-only and you likely want to inspect artifacts).
+delete_index_after_run: no
+
+# Run all run_groups under the selected preset algo `name`.
+# (This will build multiple parameterizations defined under diskann-rs-pq-memory.)
+run_all: true
+
+# Single-algo mode: only run one preset algo.
+compare: false
+
+# Must be set when run_all=true and compare=false.
+# This is the `name:` field in diskann_rs/config.yml.
+name: diskann-rs-pq-memory
+
+# These are unused in single-algo mode but kept for clarity.
+algo: pq
+name_pq: ""
+name_spherical: ""
+
+# Optional: filter which run_groups run (leave empty to run all groups).
+# These prefixes are mainly used in compare mode; keeping empty here is simplest.
+run_group_prefix_pq: ""
+run_group_prefix_spherical: ""
+
+# Framework defaults (-k etc) are fine for build-only runs.
+k: 10
+reps: 1
+batch: false
+cpu_bind: 0-16
+
+# Optional override of ann-benchmark diskann_rs/config.yml.
+# Empty => use repo default (recommended).
+config_yml: ""
+
+# Remote-only fields used by run_remote.sh
+# Destination directory on remote to store the synced HDF5.
+remote_hdf5_dir: "/nvme5/xtang/ann-data"
+
+# If true, run setup_remote.sh before executing.
+remote_setup: true
+
+# If true, print planned remote commands but do not execute.
+remote_dry_run: false

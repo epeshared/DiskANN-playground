@@ -36,6 +36,7 @@ STAGE="all"
 RUN_ID_OVERRIDE=""
 INDEX_DIR=""
 RESUME_RUN_ID=""
+INDEX_RUN_ID=""
 
 # Index cleanup control:
 # - auto: delete indexes only for auto timestamp-based runs (default)
@@ -121,48 +122,107 @@ if [[ $# -gt 0 ]]; then
   fi
 fi
 
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "ERROR: python3 not found" >&2
+  exit 1
+fi
+
+pick_python_bin() {
+  # Allow overrides (useful for custom envs / CI).
+  if [[ -n "${DISKANN_ANN_BENCH_PYTHON:-}" ]]; then
+    if command -v "${DISKANN_ANN_BENCH_PYTHON}" >/dev/null 2>&1; then
+      printf '%s' "${DISKANN_ANN_BENCH_PYTHON}"
+      return 0
+    fi
+    echo "ERROR: DISKANN_ANN_BENCH_PYTHON not found: ${DISKANN_ANN_BENCH_PYTHON}" >&2
+    return 1
+  fi
+
+  # Prefer system Python on remote machines where shell rc files may inject conda/pyenv.
+  local sys_py="/usr/bin/python3"
+  if [[ -x "$sys_py" ]]; then
+    if "$sys_py" - <<'PY' >/dev/null 2>&1
+import yaml  # noqa: F401
+PY
+    then
+      printf '%s' "$sys_py"
+      return 0
+    fi
+  fi
+
+  if python3 - <<'PY' >/dev/null 2>&1
+import yaml  # noqa: F401
+PY
+  then
+    printf '%s' "python3"
+    return 0
+  fi
+
+  echo "ERROR: python cannot import required module: yaml (PyYAML)." >&2
+  echo "- For Ubuntu: install apt package: python3-yaml" >&2
+  echo "- Or set DISKANN_ANN_BENCH_PYTHON to a venv python with PyYAML" >&2
+  return 1
+}
+
+PYTHON_BIN="$(pick_python_bin)"
+
+ensure_framework_py_deps() {
+  if "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
+import yaml  # noqa: F401
+import h5py  # noqa: F401
+import numpy  # noqa: F401
+PY
+  then
+    return 0
+  fi
+  echo "ERROR: python cannot import required modules for framework_entry (yaml, h5py, numpy)." >&2
+  echo "- For Ubuntu (offline-friendly): install apt packages: python3-yaml python3-numpy python3-h5py" >&2
+  echo "- Or set DISKANN_ANN_BENCH_PYTHON to a venv python with those deps" >&2
+  return 1
+}
+
 load_job_conf_as_bash() {
   local conf="$1"
-  python3 - "$conf" <<'PY'
-  import json
+  "$PYTHON_BIN" - "$conf" <<'PY'
+import json
 import shlex
 import sys
 from pathlib import Path
 
-  def load_config(path: Path):
+def load_config(path: Path):
     suffix = path.suffix.lower()
     text = path.read_text(encoding="utf-8")
 
     if suffix in (".yml", ".yaml"):
-      try:
-        import yaml  # type: ignore
-      except Exception as e:  # pragma: no cover
-        raise SystemExit(
-          f"failed to import PyYAML for {path} (install pyyaml or use .json): {type(e).__name__}"
-        )
-      return yaml.safe_load(text)
+        try:
+            import yaml  # type: ignore
+        except Exception as e:  # pragma: no cover
+            raise SystemExit(
+                f"failed to import PyYAML for {path} (install pyyaml or use .json): {type(e).__name__}"
+            )
+        return yaml.safe_load(text)
     if suffix == ".json":
-      return json.loads(text)
+        return json.loads(text)
     if suffix == ".toml":
-      try:
-        import tomllib
-      except Exception as e:  # pragma: no cover
-        raise SystemExit(
-          f"failed to import tomllib for {path} (use Python 3.11+ or install tomli): {type(e).__name__}"
-        )
-      return tomllib.loads(text)
+        try:
+            import tomllib
+        except Exception as e:  # pragma: no cover
+            raise SystemExit(
+                f"failed to import tomllib for {path} (use Python 3.11+ or install tomli): {type(e).__name__}"
+            )
+        return tomllib.loads(text)
 
     # Fallback: try JSON then YAML.
     try:
-      return json.loads(text)
+        return json.loads(text)
     except Exception:
-      try:
-        import yaml  # type: ignore
-      except Exception as e:  # pragma: no cover
-        raise SystemExit(
-          f"unknown config extension {suffix!r} and PyYAML unavailable: {path}: {type(e).__name__}"
-        )
-      return yaml.safe_load(text)
+        try:
+            import yaml  # type: ignore
+        except Exception as e:  # pragma: no cover
+            raise SystemExit(
+                f"unknown config extension {suffix!r} and PyYAML unavailable: {path}: {type(e).__name__}"
+            )
+        return yaml.safe_load(text)
 
 p = Path(sys.argv[1]).expanduser().resolve()
 if not p.is_file():
@@ -297,6 +357,23 @@ if [[ -n "$RESUME_RUN_ID" ]]; then
   RUN_ID_OVERRIDE="$RESUME_RUN_ID"
 fi
 
+# Support a convenience mode: in job-conf.yml, `index_dir` may be set to a *run_id*
+# (instead of a filesystem path) to reuse the saved index artifacts from that run.
+#
+# Behavior:
+# - Only supported for `--stage search`.
+# - We do NOT pass a global --index-dir (which would be shared); instead we map each case
+#   to: <runs_dir>/<dataset>/<index_run_id>/cases/<case>/index
+# - We validate index presence (by expected prefix files) before executing.
+if [[ -n "$INDEX_DIR" && ! -d "$INDEX_DIR" ]]; then
+  # Heuristic: if it's not an existing directory and it doesn't look like a path, treat as run_id.
+  # Allow "remote_build_diskann_rs_pq_memory" style ids.
+  if [[ "$INDEX_DIR" != *"/"* ]]; then
+    INDEX_RUN_ID="$INDEX_DIR"
+    INDEX_DIR=""
+  fi
+fi
+
 default_config_yml() {
   echo "$WORKSPACE_ROOT/ann-benchmark-epeshared/ann_benchmarks/algorithms/diskann_rs/config.yml"
 }
@@ -312,7 +389,7 @@ metric_to_distance() {
 
 detect_distance_from_hdf5() {
   local hdf5_path="$1"
-  python3 - "$hdf5_path" <<'PY'
+  "$PYTHON_BIN" - "$hdf5_path" <<'PY'
 import sys
 from pathlib import Path
 
@@ -340,7 +417,7 @@ get_run_groups_by_name() {
   local distance
   distance="$(metric_to_distance "$metric")"
 
-  python3 - "$cfg_yml" "$distance" "$algo_name" <<'PY'
+  "$PYTHON_BIN" - "$cfg_yml" "$distance" "$algo_name" <<'PY'
 import sys
 from pathlib import Path
 
@@ -389,13 +466,19 @@ filter_run_groups_by_prefix() {
   done
 }
 
-if [[ "$STAGE" != "all" && "$STAGE" != "build" && "$STAGE" != "search" ]]; then
-  echo "ERROR: invalid --stage=$STAGE (expected: all|build|search)" >&2
+STAGE="${STAGE,,}"
+if [[ "$STAGE" != "all" && "$STAGE" != "build" && "$STAGE" != "search" && "$STAGE" != "native" ]]; then
+  echo "ERROR: invalid --stage=$STAGE (expected: all|build|search|native)" >&2
+  exit 2
+fi
+
+if [[ -n "$INDEX_RUN_ID" && "$STAGE" != "search" ]]; then
+  echo "ERROR: index_dir-as-runid is only supported with --stage search" >&2
   exit 2
 fi
 
 if [[ "$STAGE" == "search" && -z "$RUN_ID_OVERRIDE" ]]; then
-  if [[ -z "$INDEX_DIR" ]]; then
+  if [[ -z "$INDEX_DIR" && -z "$INDEX_RUN_ID" ]]; then
     echo "ERROR: --stage search requires either --run-id/--resume-runid <existing_run_id> or --index-dir <index_dir>" >&2
     exit 2
   fi
@@ -454,37 +537,57 @@ if [[ -n "$RUN_ID_OVERRIDE" && -n "$INDEX_DIR" ]]; then
   exit 2
 fi
 
+# index_dir-as-runid is compatible with setting a new output run_id.
+# But it is NOT compatible with resume_runid (which implies reusing an existing run folder)
+# and we disallow using the same id for both output and index source to avoid accidental overwrites.
+if [[ -n "$RESUME_RUN_ID" && -n "$INDEX_RUN_ID" ]]; then
+  echo "ERROR: --resume-runid cannot be combined with index_dir-as-runid" >&2
+  exit 2
+fi
+if [[ -n "$RUN_ID_OVERRIDE" && -n "$INDEX_RUN_ID" && "$RUN_ID_OVERRIDE" == "$INDEX_RUN_ID" ]]; then
+  echo "ERROR: run_id must differ from index_dir-as-runid (would write outputs into the index source run folder)" >&2
+  echo "- Either set run_id to a new value, or clear index_dir and use resume_runid=${RUN_ID_OVERRIDE}" >&2
+  exit 2
+fi
+
 if [[ -n "$INDEX_DIR" && "$RUN_ALL" -eq 1 ]]; then
   echo "ERROR: --index-dir cannot be combined with --run-all (multiple run_groups would overwrite indexes)" >&2
   exit 2
 fi
 
-if [[ ! -f "$HDF5" ]]; then
-  echo "ERROR: hdf5 not found: $HDF5" >&2
-  exit 1
-fi
+if [[ "$STAGE" != "native" ]]; then
+  ensure_framework_py_deps
 
-# Auto-detect metric from HDF5 when not specified.
-if [[ -z "$METRIC" ]]; then
-  detected_distance="$(detect_distance_from_hdf5 "$HDF5" | tr -d '\r' | head -n1)"
-  if [[ -n "$detected_distance" ]]; then
-    METRIC="$detected_distance"
-  else
-    # Heuristic fallback based on filename.
-    hdf5_base="$(basename "$HDF5")"
-    if [[ "$hdf5_base" == *"angular"* || "$hdf5_base" == *"cosine"* ]]; then
-      METRIC="angular"
-    elif [[ "$hdf5_base" == *"l2"* || "$hdf5_base" == *"euclidean"* ]]; then
-      METRIC="l2"
+  if [[ ! -f "$HDF5" ]]; then
+    echo "ERROR: hdf5 not found: $HDF5" >&2
+    exit 1
+  fi
+
+  # Auto-detect metric from HDF5 when not specified.
+  if [[ -z "$METRIC" ]]; then
+    detected_distance="$(detect_distance_from_hdf5 "$HDF5" | tr -d '\r' | head -n1)"
+    if [[ -n "$detected_distance" ]]; then
+      METRIC="$detected_distance"
     else
-      METRIC="angular"
-      echo "WARN: could not detect metric from HDF5 attrs['distance']; defaulting to angular" >&2
+      # Heuristic fallback based on filename.
+      hdf5_base="$(basename "$HDF5")"
+      if [[ "$hdf5_base" == *"angular"* || "$hdf5_base" == *"cosine"* ]]; then
+        METRIC="angular"
+      elif [[ "$hdf5_base" == *"l2"* || "$hdf5_base" == *"euclidean"* ]]; then
+        METRIC="l2"
+      else
+        METRIC="angular"
+        echo "WARN: could not detect metric from HDF5 attrs['distance']; defaulting to angular" >&2
+      fi
     fi
   fi
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "ERROR: python3 not found" >&2
+# The native extension build requires cargo (Rust toolchain).
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "ERROR: cargo not found in PATH" >&2
+  echo "Hint: install Rust (rustup) and/or run setup_remote.sh." >&2
+  echo "Hint (remote): source \$HOME/.cargo/env" >&2
   exit 1
 fi
 
@@ -500,6 +603,11 @@ if [[ "$DISKANN_RS_NATIVE_PROFILE" == "release" ]]; then
   ( cd "$NATIVE_DIR" && cargo build --release )
 else
   ( cd "$NATIVE_DIR" && cargo build )
+fi
+
+if [[ "$STAGE" == "native" ]]; then
+  echo "==> native build-only complete" >&2
+  exit 0
 fi
 
 # Compute CPU bind string and clamp if needed.
@@ -578,7 +686,7 @@ case_is_done() {
 }
 
 merge_root_outputs() {
-  python3 - "$WORK_DIR" <<'PY'
+  "$PYTHON_BIN" - "$WORK_DIR" <<'PY'
 import sys
 import json
 import csv
@@ -968,6 +1076,73 @@ if [[ -n "$INDEX_DIR" ]]; then
   fi
 fi
 
+index_prefix_glob_for_algo() {
+  local algo="$1"
+  case "$algo" in
+    fp) echo "diskann_rs" ;;
+    pq) echo "diskann_rs_pq" ;;
+    spherical) echo "diskann_rs_spherical" ;;
+    *) echo "diskann_rs" ;;
+  esac
+}
+
+index_dir_from_runid_for_case() {
+  local index_run_id="$1"; shift
+  local case_id="$1"; shift
+  # Uses the standard run output layout.
+  echo "$RUNS_DIR/$DATASET/$index_run_id/cases/$case_id/index"
+}
+
+validate_index_dir_for_case() {
+  local algo="$1"; shift
+  local dir="$1"; shift
+  local glob_prefix
+  glob_prefix="$(index_prefix_glob_for_algo "$algo")"
+  if [[ ! -d "$dir" ]]; then
+    echo "ERROR: missing index dir: $dir" >&2
+    return 2
+  fi
+  # Ensure at least one artifact exists for the expected prefix.
+  shopt -s nullglob
+  local matches=("$dir/${glob_prefix}"*)
+  shopt -u nullglob
+  if [[ ${#matches[@]} -eq 0 ]]; then
+    echo "ERROR: index dir present but no artifacts found for prefix ${glob_prefix}*: $dir" >&2
+    return 2
+  fi
+  return 0
+}
+
+if [[ -n "$INDEX_RUN_ID" ]]; then
+  INDEX_RUN_DIR="$RUNS_DIR/$DATASET/$INDEX_RUN_ID"
+  if [[ ! -d "$INDEX_RUN_DIR" ]]; then
+    echo "ERROR: index run_id not found under runs_dir: $INDEX_RUN_DIR" >&2
+    exit 2
+  fi
+
+  # Preflight validation for the common case (single-algo, run_all preset): validate all cases
+  # before running anything.
+  if [[ "$COMPARE" -eq 0 && "$RUN_ALL" -eq 1 ]]; then
+    if [[ -z "$NAME" ]]; then
+      echo "ERROR: run_all requires name when using index_dir-as-runid" >&2
+      exit 2
+    fi
+    mapfile -t _groups < <(get_run_groups_by_name "$NAME" "$METRIC" "$CONFIG_YML")
+    missing=0
+    for rg in "${_groups[@]}"; do
+      cid="$(sanitize_case_id "$ALGO-$rg")"
+      idir="$(index_dir_from_runid_for_case "$INDEX_RUN_ID" "$cid")"
+      if ! validate_index_dir_for_case "$ALGO" "$idir"; then
+        missing=1
+      fi
+    done
+    if [[ "$missing" -ne 0 ]]; then
+      echo "ERROR: one or more required indexes are missing under index run_id=$INDEX_RUN_ID; aborting." >&2
+      exit 2
+    fi
+  fi
+fi
+
 run_one() {
   local algo="$1"; shift
   local case_id_raw="$1"; shift
@@ -985,7 +1160,7 @@ run_one() {
   # searches against missing/incorrect build artifacts.
   # For internal shared-index searches (stage_override provided with an explicit index dir),
   # we allow creating a new case directory and writing outputs there.
-  if [[ "$stage_to_use" == "search" && -z "$stage_override" && -n "$RUN_ID_OVERRIDE" && ! -d "$work_dir_full" ]]; then
+  if [[ "$stage_to_use" == "search" && -z "$stage_override" && -n "$RUN_ID_OVERRIDE" && -z "$INDEX_DIR" && -z "$INDEX_RUN_ID" && ! -d "$work_dir_full" ]]; then
     echo "ERROR: case dir not found for --stage search: $work_dir_full" >&2
     echo "Hint: resume with --stage build (or all) using the same --resume-runid." >&2
     exit 2
@@ -1036,7 +1211,7 @@ run_one() {
   export PYTHONPATH="$native_target_dir:$WORKSPACE_ROOT/ann-benchmark-epeshared:${PYTHONPATH:-}"
 
   echo "==> run: algo=$algo case=$case_id stage=$stage_to_use" >&2
-  cmd=("${affinity_prefix[@]}" python3 "$SCRIPT_DIR/src/framework_entry.py")
+  cmd=("${affinity_prefix[@]}" "$PYTHON_BIN" "$SCRIPT_DIR/src/framework_entry.py")
   cmd+=(--work-dir "$work_dir_full")
   cmd+=("${invocation_args[@]}")
   if [[ -n "$index_dir_override" ]]; then
@@ -1044,6 +1219,11 @@ run_one() {
     cmd+=(--index-dir "$index_dir_override")
   elif [[ -n "$INDEX_DIR" ]]; then
     cmd+=(--index-dir "$INDEX_DIR")
+  elif [[ -n "$INDEX_RUN_ID" && "$stage_to_use" == "search" ]]; then
+    # Reuse per-case index artifacts from an existing run.
+    prior_index_dir="$(index_dir_from_runid_for_case "$INDEX_RUN_ID" "$case_id")"
+    validate_index_dir_for_case "$algo" "$prior_index_dir"
+    cmd+=(--index-dir "$prior_index_dir")
   fi
   cmd+=("${extra_args[@]}")
   "${cmd[@]}"
