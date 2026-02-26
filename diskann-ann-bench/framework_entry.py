@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -95,6 +96,136 @@ class _PeakRssSampler:
             except Exception:
                 pass
         # Final sample at the end of the interval.
+        self._sample_once()
+
+
+def _disk_io_totals() -> tuple[int, int, int, int] | None:
+    if psutil is not None:
+        try:
+            io = psutil.disk_io_counters(perdisk=False)
+            if io is not None:
+                return (
+                    int(getattr(io, "read_count", 0)),
+                    int(getattr(io, "write_count", 0)),
+                    int(getattr(io, "read_bytes", 0)),
+                    int(getattr(io, "write_bytes", 0)),
+                )
+        except Exception:
+            pass
+
+    dev_pat = re.compile(r"^(sd[a-z]+|hd[a-z]+|vd[a-z]+|xvd[a-z]+|nvme\d+n\d+|mmcblk\d+|dm-\d+|md\d+)$")
+    total_read_ios = 0
+    total_write_ios = 0
+    total_read_bytes = 0
+    total_write_bytes = 0
+
+    try:
+        with open("/proc/diskstats", "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 14:
+                    continue
+                dev = parts[2]
+                if not dev_pat.match(dev):
+                    continue
+
+                read_ios = int(parts[3])
+                read_sectors = int(parts[5])
+                write_ios = int(parts[7])
+                write_sectors = int(parts[9])
+
+                total_read_ios += read_ios
+                total_write_ios += write_ios
+                total_read_bytes += read_sectors * 512
+                total_write_bytes += write_sectors * 512
+    except Exception:
+        return None
+
+    return (total_read_ios, total_write_ios, total_read_bytes, total_write_bytes)
+
+
+class _PeakDiskIoSampler:
+    def __init__(self, interval_s: float = 0.1):
+        self._interval_s = float(interval_s)
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+        self._last_totals: tuple[int, int, int, int] | None = None
+        self._last_ts: float | None = None
+
+        self._peak_tps: float | None = None
+        self._peak_kb_read_s: float | None = None
+        self._peak_kb_wrtn_s: float | None = None
+
+    @property
+    def peak_tps(self) -> float | None:
+        return self._peak_tps
+
+    @property
+    def peak_kb_read_s(self) -> float | None:
+        return self._peak_kb_read_s
+
+    @property
+    def peak_kb_wrtn_s(self) -> float | None:
+        return self._peak_kb_wrtn_s
+
+    def _sample_once(self) -> None:
+        totals = _disk_io_totals()
+        ts = time.perf_counter()
+        if totals is None:
+            return
+
+        if self._last_totals is None or self._last_ts is None:
+            self._last_totals = totals
+            self._last_ts = ts
+            return
+
+        dt = ts - self._last_ts
+        if dt <= 0:
+            self._last_totals = totals
+            self._last_ts = ts
+            return
+
+        prev_r_ios, prev_w_ios, prev_r_b, prev_w_b = self._last_totals
+        cur_r_ios, cur_w_ios, cur_r_b, cur_w_b = totals
+
+        d_ios = max(0, cur_r_ios - prev_r_ios) + max(0, cur_w_ios - prev_w_ios)
+        d_r_b = max(0, cur_r_b - prev_r_b)
+        d_w_b = max(0, cur_w_b - prev_w_b)
+
+        tps = float(d_ios) / float(dt)
+        kb_read_s = float(d_r_b) / float(1024.0 * dt)
+        kb_wrtn_s = float(d_w_b) / float(1024.0 * dt)
+
+        if self._peak_tps is None or tps > self._peak_tps:
+            self._peak_tps = tps
+        if self._peak_kb_read_s is None or kb_read_s > self._peak_kb_read_s:
+            self._peak_kb_read_s = kb_read_s
+        if self._peak_kb_wrtn_s is None or kb_wrtn_s > self._peak_kb_wrtn_s:
+            self._peak_kb_wrtn_s = kb_wrtn_s
+
+        self._last_totals = totals
+        self._last_ts = ts
+
+    def __enter__(self) -> "_PeakDiskIoSampler":
+        self._sample_once()
+
+        def _run() -> None:
+            while not self._stop.is_set():
+                self._sample_once()
+                self._stop.wait(self._interval_s)
+
+        self._thread = threading.Thread(target=_run, name="peak-disk-io-sampler", daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            try:
+                self._thread.join(timeout=1.0)
+            except Exception:
+                pass
         self._sample_once()
 
 
@@ -296,12 +427,24 @@ def _load_hdf5_arrays(
     train_key: str,
     test_key: str,
     neighbors_key: str,
+    need_train: bool,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, str]:
     with h5py.File(hdf5_path, "r") as f:
         distance = str(f.attrs.get("distance", "angular"))
-        X_train_raw, X_test_raw = dataset_transform(f)
-        X_train = np.asarray(X_train_raw, dtype=np.float32, order="C")
-        X_test = np.asarray(X_test_raw, dtype=np.float32, order="C")
+        if f.attrs.get("type", "dense") == "sparse":
+            # This harness currently assumes dense float32 matrices.
+            # ann-benchmarks supports sparse datasets (list-of-arrays), but diskann-rs adapters here do not.
+            raise ValueError(f"sparse HDF5 datasets are not supported by this harness: {hdf5_path}")
+
+        if need_train:
+            X_train_raw, X_test_raw = dataset_transform(f)
+            X_train = np.asarray(X_train_raw, dtype=np.float32, order="C")
+            X_test = np.asarray(X_test_raw, dtype=np.float32, order="C")
+        else:
+            # For search-only runs (index_action=load), we don't need the training vectors.
+            # Avoid loading them to keep RSS representative of index+query, not dataset size.
+            X_train = np.empty((0, 0), dtype=np.float32)
+            X_test = np.asarray(np.array(f[test_key]), dtype=np.float32, order="C")
         neighbors = np.asarray(f[neighbors_key], dtype=np.int32, order="C")
     return X_train, X_test, neighbors, distance
 
@@ -397,13 +540,18 @@ def main() -> int:
     # Make the dataset available to ann_benchmarks.datasets.get_dataset() under ./data/<dataset>.hdf5
     _ensure_dataset_symlink(work_dir=work_dir, dataset=dataset, hdf5_path=hdf5_path)
 
-    # Load raw arrays once (also used for recall ground truth).
+    do_build = args.stage in ("all", "build")
+    do_search = args.stage in ("all", "search")
+
+    # Load raw arrays (also used for recall ground truth).
+    # For search-only runs we intentionally avoid loading train vectors to keep RSS meaningful.
     t_load0 = time.perf_counter()
     X_train_raw, X_test_raw, neighbors, distance = _load_hdf5_arrays(
         hdf5_path=hdf5_path,
         train_key=args.train_key,
         test_key=args.test_key,
         neighbors_key=args.neighbors_key,
+        need_train=do_build,
     )
     t_load1 = time.perf_counter()
 
@@ -479,9 +627,6 @@ def main() -> int:
 
     X_train = np.asarray(X_train_raw, dtype=np.float32, order="C")
     X_test = np.asarray(X_test_raw, dtype=np.float32, order="C")
-
-    do_build = args.stage in ("all", "build")
-    do_search = args.stage in ("all", "search")
 
     alg_cls, index_prefix = _algo_ctor_and_prefix(args.algo, index_dir)
 
@@ -583,13 +728,14 @@ def main() -> int:
             t_load_index1 = time.perf_counter()
 
             with _PeakRssSampler() as rss_sampler:
-                latencies, ids_only = _run_queries(
-                    algo=algo,
-                    X_test=X_test,
-                    k=int(args.k),
-                    reps=int(args.reps),
-                    batch=bool(args.batch),
-                )
+                with _PeakDiskIoSampler() as disk_io_sampler:
+                    latencies, ids_only = _run_queries(
+                        algo=algo,
+                        X_test=X_test,
+                        k=int(args.k),
+                        reps=int(args.reps),
+                        batch=bool(args.batch),
+                    )
         finally:
             algo.done()
 
@@ -615,6 +761,17 @@ def main() -> int:
             "n_queries": int(X_test.shape[0]),
             "recall_at_k": float(recall),
             "peak_rss_gib": (float(peak_rss_gib) if peak_rss_gib is not None else None),
+            "peak_tps": (float(disk_io_sampler.peak_tps) if disk_io_sampler.peak_tps is not None else None),
+            "peak_kB_read_s": (
+                float(disk_io_sampler.peak_kb_read_s)
+                if disk_io_sampler.peak_kb_read_s is not None
+                else None
+            ),
+            "peak_kB_wrtn_s": (
+                float(disk_io_sampler.peak_kb_wrtn_s)
+                if disk_io_sampler.peak_kb_wrtn_s is not None
+                else None
+            ),
             "qps_mean": float(qps),
             "lat_mean_us": float(mean_lat_s * 1e6),
             "lat_p50_us": float(_pctl(latencies, 0.50) * 1e6),
@@ -663,6 +820,9 @@ def main() -> int:
             f"- batch: {bool(args.batch)}",
             f"- recall@k: {recall:.6f}",
             f"- peak_rss_gib (query only): {(peak_rss_gib if peak_rss_gib is not None else 'n/a')}",
+            f"- peak_tps (query only): {(search_obj['peak_tps'] if search_obj.get('peak_tps') is not None else 'n/a')}",
+            f"- peak_kB_read/s (query only): {(search_obj['peak_kB_read_s'] if search_obj.get('peak_kB_read_s') is not None else 'n/a')}",
+            f"- peak_kB_wrtn/s (query only): {(search_obj['peak_kB_wrtn_s'] if search_obj.get('peak_kB_wrtn_s') is not None else 'n/a')}",
             f"- qps_mean: {qps:.3f}",
             f"- lat_mean_us: {search_obj['lat_mean_us']:.3f}",
             f"- lat_p99_us: {search_obj['lat_p99_us']:.3f}",

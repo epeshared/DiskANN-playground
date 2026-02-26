@@ -103,6 +103,18 @@ Stages:
 - `--stage search`: `index_action=load`
 - `--stage all`: build then search
 
+Memory/RSS note:
+
+- If you care about **search-stage peak RSS** (e.g. `peak_rss_gib`) being representative of **index + query** (not build-time allocations), prefer running build and search as **two separate processes**:
+  - `--stage build` (process exits, memory released)
+  - then `--stage search` (fresh process loads the index and runs queries)
+- `--stage all` runs build then search in the same Python process. Even if the build objects are freed, the process RSS may stay high due to allocator behavior, which can make search RSS look larger than it “should”.
+- For `--stage search` runs, this harness avoids loading the full training matrix into memory (only test + neighbors are loaded), so `peak_rss_gib` is closer to “index + query” memory.
+
+Disk index note (PQ disk):
+
+- A “disk index” still needs an explicit **load/open** step in the search process to initialize the index (metadata + file handles, possibly mmap). It does **not** reuse in-memory build state unless you keep the same process and the same index object alive.
+
 Outputs:
 
 - `outputs/output.build.json` (if stage includes build)
@@ -121,6 +133,34 @@ python3 framework_entry.py \
   --dataset glove-25-angular \
   --metric cosine \
   --stage all \
+  --run-group diskann_rs_125_64_1-2 \
+  -k 10 \
+  --reps 3
+
+```
+
+If you want a cleaner search RSS (recommended when tracking `peak_rss_gib`), split it into two commands:
+
+```bash
+cd ../../DiskANN-playground/diskann-ann-bench
+
+# 1) Build + save index
+python3 framework_entry.py \
+  --work-dir /tmp/runs/glove-25-angular/001 \
+  --hdf5 ../../ann-benchmark-epeshared/data/glove-25-angular.hdf5 \
+  --dataset glove-25-angular \
+  --metric cosine \
+  --stage build \
+  --run-group diskann_rs_125_64_1-2 \
+  -k 10
+
+# 2) Fresh process: load index + search
+python3 framework_entry.py \
+  --work-dir /tmp/runs/glove-25-angular/001 \
+  --hdf5 ../../ann-benchmark-epeshared/data/glove-25-angular.hdf5 \
+  --dataset glove-25-angular \
+  --metric cosine \
+  --stage search \
   --run-group diskann_rs_125_64_1-2 \
   -k 10 \
   --reps 3
@@ -171,6 +211,16 @@ If you want a one-command local run (host runner + CPU binding recorded) and the
 ```bash
 bash DiskANN-playground/diskann-ann-bench/run_local.sh --hdf5 /path/to/dataset.hdf5
 bash DiskANN-playground/diskann-ann-bench/run_web.sh --host 127.0.0.1 --port 8081
+```
+
+If you want build/search in separate processes (recommended for cleaner search RSS):
+
+```bash
+# Build only (saves index under the run folder)
+bash DiskANN-playground/diskann-ann-bench/run_local.sh --stage build --hdf5 /path/to/dataset.hdf5
+
+# Search only (fresh process; loads index from the same run folder)
+bash DiskANN-playground/diskann-ann-bench/run_local.sh --stage search --resume-runid <RUN_ID_FROM_BUILD> --hdf5 /path/to/dataset.hdf5
 ```
 
 CPU binding:

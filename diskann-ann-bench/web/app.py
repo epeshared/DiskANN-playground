@@ -694,6 +694,9 @@ def create_app(settings: Settings) -> FastAPI:
 
         perf_right = [
             "peak_rss_gib",
+            "peak_tps",
+            "peak_kB_read_s",
+            "peak_kB_wrtn_s",
             "recall_at_k",
             "qps_mean",
             "lat_mean_us",
