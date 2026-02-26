@@ -27,5 +27,19 @@ _smoke_index
 result/
 
 # Local secrets
-password
-proxy-conf.json
+conf/password
+conf/password.json
+conf/remote-conf.json
+conf/remote-conf.yml
+conf/remote-conf.yaml
+conf/remote-conf.toml
+conf/proxy-conf.json
+conf/proxy-conf.yml
+conf/proxy-conf.yaml
+conf/proxy-conf.toml
+conf/job-conf.json
+conf/job-conf.yml
+conf/job-conf.yaml
+conf/job-conf.toml
+
+_remote_logs

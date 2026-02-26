@@ -46,6 +46,19 @@ def _utc_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _find_bench_dir() -> Path:
+    """Find the diskann-ann-bench directory that contains run_local.sh.
+
+    This file lives under diskann-ann-bench/src/, but avoid assuming a fixed layout.
+    """
+
+    here = Path(__file__).resolve()
+    for p in (here.parent,) + tuple(here.parents):
+        if (p / "run_local.sh").is_file():
+            return p
+    return here.parents[1]
+
+
 def _find_opt_value(argv: list[str], opt: str) -> str | None:
     for i, a in enumerate(argv):
         if a == opt and i + 1 < len(argv):
@@ -125,9 +138,8 @@ def main() -> int:
     _run(["ssh", *ssh_opts, target, "bash", "-lc", _shell_join(remote_cmd)])
 
     # Sync results back.
-    here = Path(__file__).resolve()
-    playground = here.parents[1]
-    local_runs_dir = Path(os.environ.get("RUNS_DIR", str(playground / "diskann-ann-bench" / "result"))).resolve()
+    bench_dir = _find_bench_dir()
+    local_runs_dir = Path(os.environ.get("RUNS_DIR", str(bench_dir / "result"))).resolve()
     local_dataset_dir = local_runs_dir / dataset
     local_dataset_dir.mkdir(parents=True, exist_ok=True)
 

@@ -1,0 +1,10 @@
+# Optional proxy mapping for run_remote.sh
+#
+# Copy this file to `proxy-conf.yml` if you need proxies.
+# The top-level keys are remote host/IP names (matching remote-conf.host).
+
+101.43.139.29:
+  # Allowed: socks / socks5 / http
+  type: socks
+  host: proxy.xxx.com
+  port: 1080

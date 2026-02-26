@@ -91,7 +91,7 @@ python run.py --dataset glove-100-angular --algorithm diskann-rs -k 10 --runs 3 
 
 If you want an explicit **build stage** (build + save index once) and then a **search stage** that can loop the full query set (`--reps`), use:
 
-- `DiskANN-playground/diskann-ann-bench/framework_entry.py`
+- `DiskANN-playground/diskann-ann-bench/src/framework_entry.py`
 
 This harness runs **diskann-rs via the ann-benchmarks adapters** in:
 
@@ -127,7 +127,7 @@ Example:
 ```bash
 cd ../../DiskANN-playground/diskann-ann-bench
 
-python3 framework_entry.py \
+python3 src/framework_entry.py \
   --work-dir /tmp/runs/glove-25-angular/001 \
   --hdf5 ../../ann-benchmark-epeshared/data/glove-25-angular.hdf5 \
   --dataset glove-25-angular \
@@ -145,7 +145,7 @@ If you want a cleaner search RSS (recommended when tracking `peak_rss_gib`), spl
 cd ../../DiskANN-playground/diskann-ann-bench
 
 # 1) Build + save index
-python3 framework_entry.py \
+python3 src/framework_entry.py \
   --work-dir /tmp/runs/glove-25-angular/001 \
   --hdf5 ../../ann-benchmark-epeshared/data/glove-25-angular.hdf5 \
   --dataset glove-25-angular \
@@ -155,7 +155,7 @@ python3 framework_entry.py \
   -k 10
 
 # 2) Fresh process: load index + search
-python3 framework_entry.py \
+python3 src/framework_entry.py \
   --work-dir /tmp/runs/glove-25-angular/001 \
   --hdf5 ../../ann-benchmark-epeshared/data/glove-25-angular.hdf5 \
   --dataset glove-25-angular \
@@ -184,7 +184,7 @@ Examples:
 
 ```bash
 # PQ (num_pq_chunks is provided via run-group)
-python3 framework_entry.py \
+python3 src/framework_entry.py \
   --work-dir /tmp/runs/tmp_sanity_small/001 \
   --hdf5 ../../tmp_sanity_small.hdf5 \
   --dataset tmp_sanity_small \
@@ -194,7 +194,7 @@ python3 framework_entry.py \
   -k 10 --reps 2
 
 # Spherical (nbits is provided via run-group)
-python3 framework_entry.py \
+python3 src/framework_entry.py \
   --work-dir /tmp/runs/tmp_sanity_small/002 \
   --hdf5 ../../tmp_sanity_small.hdf5 \
   --dataset tmp_sanity_small \
@@ -209,32 +209,43 @@ python3 framework_entry.py \
 If you want a one-command local run (host runner + CPU binding recorded) and then start the local web UI:
 
 ```bash
-bash DiskANN-playground/diskann-ann-bench/run_local.sh --hdf5 /path/to/dataset.hdf5
+cd DiskANN-playground/diskann-ann-bench
+
+# one-time: create a local job config (DO NOT commit it)
+cp conf/job-conf.example.yml conf/job-conf.yml
+
+# edit conf/job-conf.yml (set: hdf5, dataset, metric, etc.)
+
+bash run_local.sh
 bash DiskANN-playground/diskann-ann-bench/run_web.sh --host 127.0.0.1 --port 8081
 ```
 
 If you want build/search in separate processes (recommended for cleaner search RSS):
 
 ```bash
-# Build only (saves index under the run folder)
-bash DiskANN-playground/diskann-ann-bench/run_local.sh --stage build --hdf5 /path/to/dataset.hdf5
+# Edit conf/job-conf.yml:
+#   - set stage="build" and run_id="<some_id>" then run: bash run_local.sh
+#   - then set stage="search" and resume_runid="<same_id>" then run: bash run_local.sh
 
-# Search only (fresh process; loads index from the same run folder)
-bash DiskANN-playground/diskann-ann-bench/run_local.sh --stage search --resume-runid <RUN_ID_FROM_BUILD> --hdf5 /path/to/dataset.hdf5
+# (Config format note) The harness supports YAML/JSON/TOML.
+# YAML is the default because it supports real comments.
 ```
 
 CPU binding:
 
-- Default is `--cpu-bind 0-16` (clamped to available CPUs).
-- Override example: `bash DiskANN-playground/diskann-ann-bench/run_local.sh --cpu-bind 0-31 --hdf5 /path/to/dataset.hdf5`
+- Default is `cpu_bind: "0-16"` (clamped to available CPUs).
+- Override: set `cpu_bind` in `conf/job-conf.yml`.
+- Override: set `cpu_bind` in `conf/job-conf.yml`.
 
 Batch query mode (uses ann-benchmarks `batch_query` path, passing all queries at once):
 
 ```bash
 # By default, rayon uses all available logical CPU cores.
 # You can control the number of threads using the RAYON_NUM_THREADS environment variable.
-RAYON_NUM_THREADS=8 bash DiskANN-playground/diskann-ann-bench/run_local.sh --batch --hdf5 /path/to/dataset.hdf5
+RAYON_NUM_THREADS=8 bash DiskANN-playground/diskann-ann-bench/run_local.sh
 ```
+
+Enable batch mode by setting `batch: true` in `conf/job-conf.yml`.
 
 ## Remote run (SSH password login)
 
@@ -242,9 +253,16 @@ RAYON_NUM_THREADS=8 bash DiskANN-playground/diskann-ann-bench/run_local.sh --bat
 
 Configuration files (in `DiskANN-playground/diskann-ann-bench/`):
 
-- `remote-conf.json`: remote host/user/port/remote_dir, plus optional `connect` mode.
-- `proxy-conf.json`: optional per-remote proxy mapping (keyed by remote IP/host).
-- `password`: local file containing SSH password(s) (this file is gitignored).
+All configs live under `conf/`:
+
+- `conf/remote-conf.yml`: remote host/user/port/remote_dir, plus optional `connect` mode.
+- `conf/proxy-conf.yml`: optional per-remote proxy mapping (keyed by remote IP/host).
+- `conf/password`: local file containing SSH password(s) (this file is gitignored).
+- `conf/job-conf.yml`: job config including local `hdf5` and `remote_hdf5_dir`.
+
+Notes:
+
+- YAML is the default, but `run_local.sh`/`run_remote.sh` also accept `.json` / `.toml`.
 
 Local tool requirements:
 
@@ -256,50 +274,32 @@ Example:
 ```bash
 cd DiskANN-playground/diskann-ann-bench
 
+# one-time: create configs (DO NOT commit them)
+cp conf/job-conf.example.yml conf/job-conf.yml
+cp conf/remote-conf.example.yml conf/remote-conf.yml
+cp conf/proxy-conf.example.yml conf/proxy-conf.yml   # optional
+
 # one-time: create password file (DO NOT commit it)
-printf '%s\n' '<ssh-password>' > password
+printf '%s\n' '<ssh-password>' > conf/password
 
-# run remotely (sync code + dataset, optionally setup dependencies, run, then fetch result/)
-./run_remote.sh --hdf5 /path/to/dataset.hdf5 --setup --batch --compare
+# edit conf/job-conf.yml:
+#   - set hdf5 to a local path
+#   - set remote_hdf5_dir to a remote directory (default: <remote_dir>/data)
+#   - optionally set remote_setup=true (to run setup_remote.sh)
 
-# optionally select the PQ algorithm entry
-#   --pq-mode disk   => diskann-rs-pq-disk
-#   --pq-mode memory => diskann-rs-pq-memory
-./run_remote.sh --hdf5 /path/to/dataset.hdf5 --setup --batch --pq-mode disk
+# run remotely (sync code + dataset, optional setup, run, then fetch result/)
+./run_remote.sh
 ```
 
-Run modes for `run_remote.sh`:
-
-- **PQ-only mode** (recommended when you only want PQ):
-  - If you pass `--pq-mode`/`--pq-name` and do not explicitly set a run mode,
-    `run_remote.sh` now defaults to PQ-only (`--no-compare --algo pq --name <pq-name>`).
-
-```bash
-# PQ-only, disk index
-./run_remote.sh --hdf5 /path/to/dataset.hdf5 --setup --batch --pq-mode disk
-```
-
-- **Compare mode** (runs both PQ and spherical):
-  - Add `--compare` explicitly.
-
-```bash
-# Compare: PQ(disk) + spherical
-./run_remote.sh --hdf5 /path/to/dataset.hdf5 --setup --batch --compare --pq-mode disk
-```
-
-- **Force single-algo mode manually**:
-
-```bash
-./run_remote.sh --hdf5 /path/to/dataset.hdf5 --setup --batch --no-compare --algo pq --name diskann-rs-pq-disk
-```
+Run mode is controlled via `conf/job-conf.yml` (e.g., `compare`, `algo`, `name`, `run_group*`).
 
 ### Proxy support
 
 `run_remote.sh` can connect via a SOCKS5 / HTTP proxy using SSH `ProxyCommand`.
 
-1) In `remote-conf.json`, set `connect`:
+1) In `conf/remote-conf.yml`, set `connect`:
 
-- `auto` (default): use proxy if there is an entry for `host` in `proxy-conf.json`, otherwise direct SSH.
+- `auto` (default): use proxy if there is an entry for `host` in `conf/proxy-conf.yml`, otherwise direct SSH.
 - `ssh`: always direct SSH (ignore proxy-conf).
 - `socks` / `http`: force proxy (requires proxy-conf entry for this host).
 
@@ -307,34 +307,30 @@ Alias:
 
 - `socks5`, `socket5`, and `sock5` are accepted as aliases for `socks`.
 
-Example `remote-conf.json`:
+Example `conf/remote-conf.yml`:
 
-```json
-{
-  "host": "101.43.139.29",
-  "user": "ubuntu",
-  "port": 22,
-  "remote_dir": "~/diskann-workspace",
-  "connect": "auto"
-}
+```yml
+host: 101.43.139.29
+user: ubuntu
+port: 22
+remote_dir: ~/diskann-workspace
+connect: auto
 ```
 
-2) Create `proxy-conf.json` (keyed by the remote `host` IP/name):
+2) Create `conf/proxy-conf.yml` (keyed by the remote `host` IP/name):
 
-```json
-{
-  "101.43.139.29": {
-    "type": "socks",
-    "host": "127.0.0.1",
-    "port": 1080
-  }
-}
+```yml
+101.43.139.29:
+  type: socks
+  host: 127.0.0.1
+  port: 1080
 ```
 
 3) Dry-run to verify parsing and planned commands:
 
 ```bash
-./run_remote.sh --dry-run --hdf5 /path/to/dataset.hdf5 --batch --compare
+# set remote_dry_run=true in conf/job-conf.yml, then:
+./run_remote.sh
 ```
 
 If proxy is enabled, the script will print the resolved `ProxyCommand` (using `ncat` if available, otherwise `nc`).
@@ -395,7 +391,7 @@ bash DiskANN-playground/diskann-ann-bench/run_local.sh \
 
 ### Running PQ / spherical with run_local.sh
 
-`run_local.sh` is a convenience wrapper around `framework_entry.py`.
+`run_local.sh` is a convenience wrapper around `src/framework_entry.py`.
 It builds the native extension (via cargo), sets `PYTHONPATH` so the adapter can import it, and then runs the split build/search workflow.
 
 Run modes:
@@ -593,7 +589,7 @@ What `run_local.sh` does:
 - Runs `cargo build` in `ann-benchmark-epeshared/ann_benchmarks/algorithms/diskann_rs/native`
 - Chooses a CPU bind range (default `0-16`, clamped to `0-(nproc-1)` if fewer cores)
 - Uses `numactl --physcpubind=...` (preferred) or `taskset -c ...` to **actually bind** the benchmark process
-- Calls `framework_entry.py` and writes `cpu-bind.txt` so the binding is shown in the web UI
+- Calls `src/framework_entry.py` and writes `cpu-bind.txt` so the binding is shown in the web UI
 
 Notes:
 
@@ -608,7 +604,7 @@ What `run_web.sh` does:
 
 ### Remote mode (ssh + sync run folder back)
 
-If your **index build/search must run on a remote machine** (e.g. server with more cores/DRAM) but you still want the results to show up in the existing web UI locally, use `run_remote.py`.
+If your **index build/search must run on a remote machine** (e.g. server with more cores/DRAM) but you still want the results to show up in the existing web UI locally, use `src/run_remote.py`.
 
 Example:
 
@@ -618,7 +614,7 @@ Example:
 ```bash
 cd ../../DiskANN-playground/diskann-ann-bench
 
-python3 run_remote.py \
+python3 src/run_remote.py \
   --remote-host myserver \
   --remote-user ubuntu \
   --ssh-opts "-i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
@@ -637,7 +633,7 @@ Drop-in replacement (current style):
 ```bash
 cd ../../DiskANN-playground/diskann-ann-bench
 
-python3 run_remote.py \
+python3 src/run_remote.py \
   --remote-host myserver \
   --remote-user ubuntu \
   --ssh-opts "-i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \

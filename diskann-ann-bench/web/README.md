@@ -57,5 +57,5 @@ Open:
 
 ## Tips
 
-- If you used `run_local.sh` or `run_remote.py`, they write runs under `DiskANN-playground/diskann-ann-bench/result` by default, so they should appear automatically.
+- If you used `run_local.sh` or `src/run_remote.py`, they write runs under `DiskANN-playground/diskann-ann-bench/result` by default, so they should appear automatically.
 - In compare/sweep runs, a single `run_id` can contain multiple cases under `cases/`, but the run root still has `outputs/*` as an aggregated view for browsing.

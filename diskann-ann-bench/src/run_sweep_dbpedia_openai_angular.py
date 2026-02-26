@@ -23,8 +23,12 @@ class BuildCfg:
 
 
 def _workspace_root() -> Path:
-    # .../DiskANN-playground/diskann-ann-bench/run_sweep_dbpedia_openai_angular.py
-    return Path(__file__).resolve().parents[2]
+    here = Path(__file__).resolve()
+    for p in (here.parent,) + tuple(here.parents):
+        if (p / "DiskANN-playground").is_dir() and (p / "ann-benchmark-epeshared").is_dir():
+            return p
+    # Fallback to the historical assumption (best effort).
+    return here.parents[3]
 
 
 def _native_target_dir(*, profile: str) -> Path:
@@ -205,7 +209,7 @@ def main() -> int:
     args = ap.parse_args()
 
     ws = _workspace_root()
-    framework_entry = ws / "DiskANN-playground" / "diskann-ann-bench" / "framework_entry.py"
+    framework_entry = ws / "DiskANN-playground" / "diskann-ann-bench" / "src" / "framework_entry.py"
     if not framework_entry.is_file():
         raise FileNotFoundError(str(framework_entry))
 

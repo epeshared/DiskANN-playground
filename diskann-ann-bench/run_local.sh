@@ -7,56 +7,19 @@ set -euo pipefail
 # - Writes mode.txt + cpu-bind.txt into the run folder so the web UI can filter
 #
 # Usage:
-#   bash DiskANN-playground/diskann-ann-bench/run_local.sh [--hdf5 /path/to/file.hdf5]
-#
-# Stage control:
-#   --stage {all,build,search}
-#     all:   build+search (default)
-#     build: only build+save index
-#     search: only load+search using an existing run folder (requires --run-id)
-#
-# Reuse a previous run folder:
-#   --run-id <existing_run_id>
-#   --resume-runid <existing_run_id>   (skip completed cases and continue)
-#
-# Reuse a prebuilt index directory (host runner only):
-#   --index-dir </path/to/index_dir>
-
-# Disk control:
-#   --keep-index         Keep created indexes under the run folder
-#   --delete-index       Delete created indexes under the run folder (default for auto timestamp runs)
+#   bash DiskANN-playground/diskann-ann-bench/run_local.sh [--conf conf/job-conf.yml]
 #
 # Notes:
-# - --run-id/--resume-runid and --index-dir are mutually exclusive.
-# - For --stage search you must provide either --run-id/--resume-runid or --index-dir.
-#
-# Common options:
-#   --metric {l2,euclidean,cosine,angular}
-#   --cpu-bind LO-HI    Bind the host runner to CPU cores (default: 0-16; clamped).
-#   --l-build N --max-outdegree N --alpha F -k N --l-search N --reps N
-#   --l-search-list 200,300,500
-#   --batch            Use ann-benchmarks batch_query path (pass all queries at once).
-#                      Set RAYON_NUM_THREADS=N to control the number of threads used.
-#
-# Algo options:
-#   --algo {fp,pq,spherical}
-#   --num-pq-chunks N
-#   --num-pq-chunks-list 96,128,192
-#   --spherical-nbits {1,2,4}
-#   --spherical-nbits-list 2,4
-#   --translate-to-center | --no-translate-to-center
-#
-# Compare mode (runs pq + spherical in one shot):
-#   --compare --num-pq-chunks N [--spherical-nbits 2]
-#   --no-compare   Run a single algorithm path (use with --algo/--name)
-#
-# Run-all filtering (when using --run-all):
-#   --run-group-prefix-pq PREFIX
-#   --run-group-prefix-spherical PREFIX
+# - This script is config-file driven (YAML default; JSON/TOML also supported).
+# - All run parameters come from the job config file (defaults can be overridden there).
+# - Only the --conf flag is accepted; any other CLI flags are rejected.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PLAYGROUND_DIR="$(realpath "$SCRIPT_DIR/..")"
 WORKSPACE_ROOT="$(realpath "$PLAYGROUND_DIR/..")"
+
+CONF_DIR="$SCRIPT_DIR/conf"
+JOB_CONF="$CONF_DIR/job-conf.yml"
 
 # You can override via --hdf5.
 HDF5="/mnt/nvme2n1p1/xtang/ann-data/dbpedia-openai-1000k-angular.hdf5"
@@ -114,7 +77,7 @@ L_SEARCH_LIST=""
 NUM_PQ_CHUNKS_LIST=""
 SPHERICAL_NBITS_LIST=""
 
-# Pass-through to framework_entry.py (tri-state: unset/true/false).
+# Pass-through to src/framework_entry.py (tri-state: unset/true/false).
 TRANSLATE_TO_CENTER=""
 
 CONFIG_YML=""
@@ -128,93 +91,154 @@ RUN_GROUP_SPHERICAL=""
 export DISKANN_RS_NATIVE_PROFILE
 
 # Fit batching (passed to diskann_rs_native via env var).
-# You can override by exporting DISKANN_RS_FIT_BATCH_SIZE before running this script,
-# or using --fit-batch-size N.
+# You can override by exporting DISKANN_RS_FIT_BATCH_SIZE before running this script.
 : "${DISKANN_RS_FIT_BATCH_SIZE:=20000}"
 export DISKANN_RS_FIT_BATCH_SIZE
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --hdf5)
-      HDF5="$2"; shift 2 ;;
-    --metric)
-      METRIC="$2"; shift 2 ;;
-    --algo)
-      ALGO="$2"; shift 2 ;;
-    --compare)
-      COMPARE=1; shift 1 ;;
-    --no-compare)
-      COMPARE=0; shift 1 ;;
-    --run-all)
-      RUN_ALL=1; shift 1 ;;
-    --name)
-      NAME="$2"; shift 2 ;;
-    --name-pq)
-      NAME_PQ="$2"; shift 2 ;;
-    --name-spherical)
-      NAME_SPHERICAL="$2"; shift 2 ;;
-    --run-group-prefix-pq)
-      RUN_GROUP_PREFIX_PQ="$2"; shift 2 ;;
-    --run-group-prefix-spherical)
-      RUN_GROUP_PREFIX_SPHERICAL="$2"; shift 2 ;;
-    --stage)
-      STAGE="$2"; shift 2 ;;
-    --run-id)
-      RUN_ID_OVERRIDE="$2"; shift 2 ;;
-    --resume-runid)
-      RESUME_RUN_ID="$2"; shift 2 ;;
-    --index-dir)
-      INDEX_DIR="$2"; shift 2 ;;
-    --keep-index)
-      DELETE_INDEX_AFTER_RUN="no"; shift 1 ;;
-    --delete-index)
-      DELETE_INDEX_AFTER_RUN="yes"; shift 1 ;;
-    --l-build)
-      L_BUILD="$2"; shift 2 ;;
-    --max-outdegree)
-      MAX_OUTDEGREE="$2"; shift 2 ;;
-    --alpha)
-      ALPHA="$2"; shift 2 ;;
-    -k)
-      K="$2"; shift 2 ;;
-    --l-search)
-      L_SEARCH="$2"; shift 2 ;;
-    --l-search-list)
-      L_SEARCH_LIST="$2"; shift 2 ;;
-    --reps)
-      REPS="$2"; shift 2 ;;
-    --batch)
-      BATCH=1; shift 1 ;;
-    --cpu-bind)
-      CPU_BIND="$2"; shift 2 ;;
-    --num-pq-chunks)
-      NUM_PQ_CHUNKS="$2"; shift 2 ;;
-    --num-pq-chunks-list)
-      NUM_PQ_CHUNKS_LIST="$2"; shift 2 ;;
-    --spherical-nbits)
-      SPHERICAL_NBITS="$2"; shift 2 ;;
-    --spherical-nbits-list)
-      SPHERICAL_NBITS_LIST="$2"; shift 2 ;;
-    --translate-to-center)
-      TRANSLATE_TO_CENTER="true"; shift 1 ;;
-    --no-translate-to-center)
-      TRANSLATE_TO_CENTER="false"; shift 1 ;;
-    --config-yml)
-      CONFIG_YML="$2"; shift 2 ;;
-    --run-group)
-      RUN_GROUP="$2"; shift 2 ;;
-    --run-group-pq)
-      RUN_GROUP_PQ="$2"; shift 2 ;;
-    --run-group-spherical)
-      RUN_GROUP_SPHERICAL="$2"; shift 2 ;;
-    --fit-batch-size)
-      DISKANN_RS_FIT_BATCH_SIZE="$2"; shift 2 ;;
-    *)
-      echo "Unknown arg: $1" >&2
-      exit 2
-      ;;
-  esac
-done
+usage() {
+  cat >&2 <<EOF
+Usage:
+  bash DiskANN-playground/diskann-ann-bench/run_local.sh [--conf conf/job-conf.yml]
+
+Config:
+  Default config path: $JOB_CONF
+  Copy from:           $CONF_DIR/job-conf.example.yml
+EOF
+}
+
+if [[ $# -gt 0 ]]; then
+  if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+    usage
+    exit 0
+  fi
+  if [[ "$1" == "--conf" && $# -eq 2 ]]; then
+    JOB_CONF="$2"
+  else
+    echo "ERROR: this script is config-file driven; only --conf is accepted." >&2
+    echo "Got args: $*" >&2
+    usage
+    exit 2
+  fi
+fi
+
+load_job_conf_as_bash() {
+  local conf="$1"
+  python3 - "$conf" <<'PY'
+  import json
+import shlex
+import sys
+from pathlib import Path
+
+  def load_config(path: Path):
+    suffix = path.suffix.lower()
+    text = path.read_text(encoding="utf-8")
+
+    if suffix in (".yml", ".yaml"):
+      try:
+        import yaml  # type: ignore
+      except Exception as e:  # pragma: no cover
+        raise SystemExit(
+          f"failed to import PyYAML for {path} (install pyyaml or use .json): {type(e).__name__}"
+        )
+      return yaml.safe_load(text)
+    if suffix == ".json":
+      return json.loads(text)
+    if suffix == ".toml":
+      try:
+        import tomllib
+      except Exception as e:  # pragma: no cover
+        raise SystemExit(
+          f"failed to import tomllib for {path} (use Python 3.11+ or install tomli): {type(e).__name__}"
+        )
+      return tomllib.loads(text)
+
+    # Fallback: try JSON then YAML.
+    try:
+      return json.loads(text)
+    except Exception:
+      try:
+        import yaml  # type: ignore
+      except Exception as e:  # pragma: no cover
+        raise SystemExit(
+          f"unknown config extension {suffix!r} and PyYAML unavailable: {path}: {type(e).__name__}"
+        )
+      return yaml.safe_load(text)
+
+p = Path(sys.argv[1]).expanduser().resolve()
+if not p.is_file():
+    raise SystemExit(f"job conf not found: {p}")
+
+obj = load_config(p)
+if not isinstance(obj, dict):
+  raise SystemExit(f"job conf must be a mapping/object: {p}")
+
+def emit(name: str, value) -> None:
+    if value is None:
+        return
+    if isinstance(value, bool):
+        v = "1" if value else "0"
+    else:
+        v = str(value)
+    print(f"{name}={shlex.quote(v)}")
+
+emit("HDF5", obj.get("hdf5"))
+emit("METRIC", obj.get("metric"))
+emit("STAGE", obj.get("stage"))
+emit("RUN_ID_OVERRIDE", obj.get("run_id"))
+emit("RESUME_RUN_ID", obj.get("resume_runid"))
+emit("INDEX_DIR", obj.get("index_dir"))
+emit("DELETE_INDEX_AFTER_RUN", obj.get("delete_index_after_run"))
+
+emit("RUN_ALL", obj.get("run_all"))
+emit("COMPARE", obj.get("compare"))
+
+emit("ALGO", obj.get("algo"))
+emit("NAME", obj.get("name"))
+emit("NAME_PQ", obj.get("name_pq"))
+emit("NAME_SPHERICAL", obj.get("name_spherical"))
+
+emit("RUN_GROUP_PREFIX_PQ", obj.get("run_group_prefix_pq"))
+emit("RUN_GROUP_PREFIX_SPHERICAL", obj.get("run_group_prefix_spherical"))
+
+emit("L_BUILD", obj.get("l_build"))
+emit("MAX_OUTDEGREE", obj.get("max_outdegree"))
+emit("ALPHA", obj.get("alpha"))
+emit("K", obj.get("k"))
+emit("L_SEARCH", obj.get("l_search"))
+emit("REPS", obj.get("reps"))
+
+emit("BATCH", obj.get("batch"))
+emit("CPU_BIND", obj.get("cpu_bind"))
+
+emit("NUM_PQ_CHUNKS", obj.get("num_pq_chunks"))
+emit("SPHERICAL_NBITS", obj.get("spherical_nbits"))
+
+emit("L_SEARCH_LIST", obj.get("l_search_list"))
+emit("NUM_PQ_CHUNKS_LIST", obj.get("num_pq_chunks_list"))
+emit("SPHERICAL_NBITS_LIST", obj.get("spherical_nbits_list"))
+
+ttc = obj.get("translate_to_center")
+if ttc is True:
+    emit("TRANSLATE_TO_CENTER", "true")
+elif ttc is False:
+    emit("TRANSLATE_TO_CENTER", "false")
+
+emit("CONFIG_YML", obj.get("config_yml"))
+
+emit("RUN_GROUP", obj.get("run_group"))
+emit("RUN_GROUP_PQ", obj.get("run_group_pq"))
+emit("RUN_GROUP_SPHERICAL", obj.get("run_group_spherical"))
+
+emit("DISKANN_RS_NATIVE_PROFILE", obj.get("diskann_rs_native_profile"))
+emit("DISKANN_RS_FIT_BATCH_SIZE", obj.get("fit_batch_size"))
+emit("RUNS_DIR", obj.get("runs_dir"))
+PY
+}
+
+eval "$(load_job_conf_as_bash "$JOB_CONF")"
+
+export DISKANN_RS_NATIVE_PROFILE
+export DISKANN_RS_FIT_BATCH_SIZE
 
 csv_to_lines() {
   # Split comma-separated values into newline-separated tokens.
@@ -1012,7 +1036,7 @@ run_one() {
   export PYTHONPATH="$native_target_dir:$WORKSPACE_ROOT/ann-benchmark-epeshared:${PYTHONPATH:-}"
 
   echo "==> run: algo=$algo case=$case_id stage=$stage_to_use" >&2
-  cmd=("${affinity_prefix[@]}" python3 "$SCRIPT_DIR/framework_entry.py")
+  cmd=("${affinity_prefix[@]}" python3 "$SCRIPT_DIR/src/framework_entry.py")
   cmd+=(--work-dir "$work_dir_full")
   cmd+=("${invocation_args[@]}")
   if [[ -n "$index_dir_override" ]]; then

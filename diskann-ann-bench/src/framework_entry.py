@@ -32,6 +32,21 @@ except Exception:  # pragma: no cover
     psutil = None
 
 
+def _find_workspace_root() -> Path:
+    """Find the workspace root containing both DiskANN-playground/ and ann-benchmark-epeshared/.
+
+    This script lives under DiskANN-playground/diskann-ann-bench/src/.
+    Avoid relying on a fixed number of parent directories so refactors don't break path logic.
+    """
+
+    here = Path(__file__).resolve()
+    for p in (here.parent,) + tuple(here.parents):
+        if (p / "DiskANN-playground").is_dir() and (p / "ann-benchmark-epeshared").is_dir():
+            return p
+    # Fallback to the historical assumption (best effort).
+    return here.parents[3]
+
+
 def _rss_bytes_self() -> int | None:
     """Best-effort RSS (resident set size) for the current process in bytes."""
     if psutil is not None:
@@ -328,8 +343,8 @@ def _algo_ctor_and_prefix(algo: str, index_dir: Path) -> tuple[type, Path]:
 
 
 def _default_diskann_config_yml() -> Path:
-    # .../DiskANN-playground/diskann-ann-bench/framework_entry.py
-    workspace_root = Path(__file__).resolve().parents[2]
+    # Resolve the workspace root that contains both DiskANN-playground/ and ann-benchmark-epeshared/.
+    workspace_root = _find_workspace_root()
     return (
         workspace_root
         / "ann-benchmark-epeshared"

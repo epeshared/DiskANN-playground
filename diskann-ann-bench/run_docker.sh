@@ -146,7 +146,7 @@ run_one() {
   fi
 
   docker "${docker_args[@]}" "$IMAGE" \
-    python3 /diskann-ann-bench/framework_entry.py \
+    python3 /diskann-ann-bench/src/framework_entry.py \
       --work-dir "$c_work_dir" \
       --hdf5 "$C_HDF5" \
       --dataset "$DATASET" \

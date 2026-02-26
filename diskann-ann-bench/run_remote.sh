@@ -9,20 +9,23 @@ set -euo pipefail
 # 5) 将远端 result/ 目录同步回本地
 
 # Usage:
-#   ./run_remote.sh --hdf5 /path/to/dataset.hdf5 [--setup] [--dry-run] [--pq-mode disk|memory | --pq-name <algo-name>] [<run_local.sh args...>]
+#   ./run_remote.sh [--conf-dir conf]
 #
 # Notes:
-# - Any unrecognized args are forwarded to run_local.sh on the remote.
-# - --pq-mode/--pq-name are convenience options that translate to run_local.sh's --name-pq.
-# - --pq-mode and --pq-name are mutually exclusive.
+# - This script is config-file driven (YAML default; JSON/TOML also supported).
+# - Remote connection info comes from: conf/remote-conf.(yml|yaml|json|toml)
+# - Job info (including local HDF5 path + remote_hdf5_dir) comes from: conf/job-conf.(yml|yaml|json|toml)
+# - Only --conf-dir is accepted; any other CLI flags are rejected.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_PLAYGROUND_DIR="$(realpath "$SCRIPT_DIR/..")"
 WORKSPACE_ROOT="$(realpath "$DEFAULT_PLAYGROUND_DIR/..")"
 
-CONF_JSON="$SCRIPT_DIR/remote-conf.json"
-PASSWORD_FILE="$SCRIPT_DIR/password"
-PROXY_CONF_JSON="$SCRIPT_DIR/proxy-conf.json"
+CONF_DIR="$SCRIPT_DIR/conf"
+REMOTE_CONF="$CONF_DIR/remote-conf.yml"
+JOB_CONF="$CONF_DIR/job-conf.yml"
+PASSWORD_FILE="$CONF_DIR/password"
+PROXY_CONF="$CONF_DIR/proxy-conf.yml"
 
 HOST=""
 USER=""
@@ -31,8 +34,8 @@ REMOTE_DIR=""
 CONNECT_MODE=""
 
 HDF5=""
-HDF5_DIR=""
 HDF5_NAME=""
+REMOTE_HDF5_DIR=""
 SETUP=0
 DRY_RUN=0
 
@@ -40,101 +43,97 @@ DISKANN_DIR="$WORKSPACE_ROOT/DiskANN-rs"
 ANN_BENCH_DIR="$WORKSPACE_ROOT/ann-benchmark-epeshared"
 PLAYGROUND_DIR="$DEFAULT_PLAYGROUND_DIR"
 
-RUN_ARGS=()
-
-# Convenience options for selecting which PQ algorithm name to run on the remote.
-# These are translated to run_local.sh's existing --name-pq flag.
-PQ_MODE=""
-PQ_NAME=""
-
 LOG_DIR="$SCRIPT_DIR/_remote_logs"
 RUN_TS="$(date +%Y%m%d_%H%M%S)"
 LOG_FILE=""
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --conf) CONF_JSON="$2"; shift 2 ;;
-    --password-file) PASSWORD_FILE="$2"; shift 2 ;;
-    --proxy-conf) PROXY_CONF_JSON="$2"; shift 2 ;;
-    --host) HOST="$2"; shift 2 ;;
-    --user) USER="$2"; shift 2 ;;
-    --port) PORT="$2"; shift 2 ;;
-    --remote-dir) REMOTE_DIR="$2"; shift 2 ;;
-    --connect) CONNECT_MODE="$2"; shift 2 ;;
-    --hdf5) HDF5="$2"; shift 2 ;;
-    --hdf5-dir) HDF5_DIR="$2"; shift 2 ;;
-    --hdf5-name) HDF5_NAME="$2"; shift 2 ;;
-    --diskann-dir) DISKANN_DIR="$2"; shift 2 ;;
-    --ann-bench-dir) ANN_BENCH_DIR="$2"; shift 2 ;;
-    --playground-dir) PLAYGROUND_DIR="$2"; shift 2 ;;
-    --setup) SETUP=1; shift 1 ;;
-    --dry-run) DRY_RUN=1; shift 1 ;;
-    --pq-mode) PQ_MODE="$2"; shift 2 ;;
-    --pq-name) PQ_NAME="$2"; shift 2 ;;
-    *) RUN_ARGS+=("$1"); shift 1 ;;
-  esac
-done
+usage() {
+  cat >&2 <<EOF
+Usage:
+  ./run_remote.sh [--conf-dir conf]
 
-if [[ -n "$PQ_MODE" && -n "$PQ_NAME" ]]; then
-  echo "ERROR: --pq-mode and --pq-name are mutually exclusive" >&2
-  exit 2
-fi
-
-if [[ -n "$PQ_MODE" ]]; then
-  case "${PQ_MODE,,}" in
-    disk)
-      PQ_NAME="diskann-rs-pq-disk"
-      ;;
-    mem|memory)
-      PQ_NAME="diskann-rs-pq-memory"
-      ;;
-    *)
-      echo "ERROR: invalid --pq-mode: $PQ_MODE (expected: disk|memory)" >&2
-      exit 2
-      ;;
-  esac
-fi
-
-has_run_arg() {
-  local needle="$1"
-  local a
-  for a in "${RUN_ARGS[@]}"; do
-    if [[ "$a" == "$needle" ]]; then
-      return 0
-    fi
-  done
-  return 1
+Config:
+  Default conf dir:    $CONF_DIR
+  Remote config:       $REMOTE_CONF
+  Job config:          $JOB_CONF
+  Copy templates from: $CONF_DIR/*.example.yml
+EOF
 }
 
-if [[ -n "$PQ_NAME" ]]; then
-  # Backward compatibility: keep passing --name-pq for compare-mode flows.
-  RUN_ARGS+=("--name-pq" "$PQ_NAME")
-
-  # When user selects --pq-mode/--pq-name and doesn't provide explicit run-mode flags,
-  # default to PQ-only workflow for clearer behavior.
-  if ! has_run_arg "--compare" \
-    && ! has_run_arg "--no-compare" \
-    && ! has_run_arg "--algo" \
-    && ! has_run_arg "--name" \
-    && ! has_run_arg "--run-group" \
-    && ! has_run_arg "--run-group-pq" \
-    && ! has_run_arg "--run-group-spherical"; then
-    RUN_ARGS+=("--no-compare" "--algo" "pq" "--name" "$PQ_NAME")
+if [[ $# -gt 0 ]]; then
+  if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+    usage
+    exit 0
+  fi
+  if [[ "$1" == "--conf-dir" && $# -eq 2 ]]; then
+    CONF_DIR="$2"
+  else
+    echo "ERROR: this script is config-file driven; only --conf-dir is accepted." >&2
+    echo "Got args: $*" >&2
+    usage
+    exit 2
   fi
 fi
 
-load_conf() {
+case "$CONF_DIR" in
+  /*) : ;;
+  *) CONF_DIR="$SCRIPT_DIR/$CONF_DIR" ;;
+esac
+
+pick_conf_file() {
+  # Prefer YAML, then JSON, then TOML.
+  local base="$1"
+  if [[ -f "$CONF_DIR/${base}.yml" ]]; then
+    printf '%s' "$CONF_DIR/${base}.yml"
+  elif [[ -f "$CONF_DIR/${base}.yaml" ]]; then
+    printf '%s' "$CONF_DIR/${base}.yaml"
+  elif [[ -f "$CONF_DIR/${base}.json" ]]; then
+    printf '%s' "$CONF_DIR/${base}.json"
+  elif [[ -f "$CONF_DIR/${base}.toml" ]]; then
+    printf '%s' "$CONF_DIR/${base}.toml"
+  else
+    # Default path (even if missing) for error messages.
+    printf '%s' "$CONF_DIR/${base}.yml"
+  fi
+}
+
+REMOTE_CONF="$(pick_conf_file remote-conf)"
+JOB_CONF="$(pick_conf_file job-conf)"
+PASSWORD_FILE="$CONF_DIR/password"
+PROXY_CONF="$(pick_conf_file proxy-conf)"
+
+load_remote_conf() {
   local conf="$1"
   python3 - "$conf" <<'PY'
 import json
 import sys
 from pathlib import Path
 
+def load_config(path: Path):
+  suffix = path.suffix.lower()
+  text = path.read_text(encoding="utf-8")
+  if suffix in (".yml", ".yaml"):
+    import yaml  # type: ignore
+    return yaml.safe_load(text)
+  if suffix == ".json":
+    return json.loads(text)
+  if suffix == ".toml":
+    import tomllib
+    return tomllib.loads(text)
+  # Fallback: try JSON then YAML.
+  try:
+    return json.loads(text)
+  except Exception:
+    import yaml  # type: ignore
+    return yaml.safe_load(text)
+
 p = Path(sys.argv[1]).expanduser()
 if not p.is_file():
     raise SystemExit(f"remote conf not found: {p}")
 
-obj = json.loads(p.read_text(encoding="utf-8"))
+obj = load_config(p)
+if not isinstance(obj, dict):
+  raise SystemExit(f"remote conf must be a mapping/object: {p}")
 
 def g(key, default=""):
     v = obj.get(key, default)
@@ -150,9 +149,58 @@ print(g("connect", "auto"))
 PY
 }
 
+load_job_conf_for_remote() {
+  local conf="$1"
+  python3 - "$conf" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+def load_config(path: Path):
+  suffix = path.suffix.lower()
+  text = path.read_text(encoding="utf-8")
+  if suffix in (".yml", ".yaml"):
+    import yaml  # type: ignore
+    return yaml.safe_load(text)
+  if suffix == ".json":
+    return json.loads(text)
+  if suffix == ".toml":
+    import tomllib
+    return tomllib.loads(text)
+  try:
+    return json.loads(text)
+  except Exception:
+    import yaml  # type: ignore
+    return yaml.safe_load(text)
+
+p = Path(sys.argv[1]).expanduser()
+if not p.is_file():
+  raise SystemExit(f"job conf not found: {p}")
+
+obj = load_config(p)
+if not isinstance(obj, dict):
+  raise SystemExit(f"job conf must be a mapping/object: {p}")
+
+def g(key, default=""):
+  v = obj.get(key, default)
+  if v is None:
+    return ""
+  return str(v)
+
+def gb(key, default=False) -> str:
+  v = obj.get(key, default)
+  return "1" if bool(v) else "0"
+
+print(g("hdf5"))
+print(g("remote_hdf5_dir"))
+print(gb("remote_setup", False))
+print(gb("remote_dry_run", False))
+PY
+}
+
 if [[ -z "$HOST" || -z "$USER" || -z "$PORT" || -z "$REMOTE_DIR" ]]; then
-  if [[ -f "$CONF_JSON" ]]; then
-    mapfile -t _conf < <(load_conf "$CONF_JSON")
+  if [[ -f "$REMOTE_CONF" ]]; then
+    mapfile -t _conf < <(load_remote_conf "$REMOTE_CONF")
     # Only fill unset values from config.
     [[ -z "$HOST" ]] && HOST="${_conf[0]:-}"
     [[ -z "$USER" ]] && USER="${_conf[1]:-}"
@@ -164,7 +212,7 @@ fi
 
 if [[ -z "$HOST" || -z "$USER" ]]; then
   echo "ERROR: missing remote host/user." >&2
-  echo "Provide --host/--user or create $CONF_JSON" >&2
+  echo "Create $REMOTE_CONF" >&2
   exit 1
 fi
 
@@ -186,42 +234,34 @@ case "${CONNECT_MODE,,}" in
     ;;
 esac
 
-if [[ -n "$HDF5" && -n "$HDF5_DIR" ]]; then
-  echo "ERROR: --hdf5 and --hdf5-dir are mutually exclusive" >&2
+mapfile -t _jobconf < <(load_job_conf_for_remote "$JOB_CONF")
+HDF5="${_jobconf[0]:-}"
+REMOTE_HDF5_DIR="${_jobconf[1]:-}"
+SETUP="${_jobconf[2]:-0}"
+DRY_RUN="${_jobconf[3]:-0}"
+
+if [[ -z "$HDF5" ]]; then
+  echo "ERROR: missing 'hdf5' in $JOB_CONF" >&2
   exit 1
 fi
-
-if [[ -n "$HDF5" ]]; then
-  if [[ ! -f "$HDF5" ]]; then
-    echo "ERROR: Local HDF5 file not found: $HDF5" >&2
-    exit 1
-  fi
-  HDF5_NAME="$(basename "$HDF5")"
-else
-  if [[ -z "$HDF5_DIR" ]]; then
-    echo "ERROR: must provide --hdf5 <file> OR --hdf5-dir <dir>" >&2
-    exit 1
-  fi
-  if [[ ! -d "$HDF5_DIR" ]]; then
-    echo "ERROR: Local HDF5 dir not found: $HDF5_DIR" >&2
-    exit 1
-  fi
-  if [[ -z "$HDF5_NAME" ]]; then
-    # Auto-pick if exactly one .hdf5 exists.
-    mapfile -t _hdf5s < <(find "$HDF5_DIR" -maxdepth 1 -type f -name '*.hdf5' -printf '%f\n' | sort)
-    if [[ ${#_hdf5s[@]} -ne 1 ]]; then
-      echo "ERROR: --hdf5-name is required when --hdf5-dir contains multiple .hdf5 files" >&2
-      echo "Found: ${#_hdf5s[@]} files" >&2
-      exit 1
-    fi
-    HDF5_NAME="${_hdf5s[0]}"
-  fi
-  if [[ ! -f "$HDF5_DIR/$HDF5_NAME" ]]; then
-    echo "ERROR: HDF5 file not found in dir: $HDF5_DIR/$HDF5_NAME" >&2
-    exit 1
-  fi
-  HDF5="$HDF5_DIR/$HDF5_NAME"
+if [[ ! -f "$HDF5" ]]; then
+  echo "ERROR: Local HDF5 file not found: $HDF5" >&2
+  exit 1
 fi
+HDF5_NAME="$(basename "$HDF5")"
+
+# Resolve remote HDF5 destination.
+# If remote_hdf5_dir is relative, interpret it as relative to REMOTE_DIR.
+if [[ -z "$REMOTE_HDF5_DIR" ]]; then
+  REMOTE_HDF5_DIR="$REMOTE_DIR/data"
+else
+  case "$REMOTE_HDF5_DIR" in
+    /*|~/*) : ;;
+    *) REMOTE_HDF5_DIR="$REMOTE_DIR/$REMOTE_HDF5_DIR" ;;
+  esac
+fi
+REMOTE_HDF5_DIR="${REMOTE_HDF5_DIR%/}"
+REMOTE_HDF5="$REMOTE_HDF5_DIR/$HDF5_NAME"
 
 if [[ ! -f "$PASSWORD_FILE" ]]; then
   echo "ERROR: password file not found: $PASSWORD_FILE" >&2
@@ -330,7 +370,7 @@ LOG_FILE="$LOG_DIR/${HOST}_${RUN_TS}.log"
 echo "==> remote output log: $LOG_FILE" >&2
 
 if [[ -z "$HDF5" ]]; then
-  echo "ERROR: missing --hdf5 (or --hdf5-dir/--hdf5-name)" >&2
+  echo "ERROR: missing 'hdf5' in $JOB_CONF" >&2
   exit 1
 fi
 
@@ -362,6 +402,23 @@ import json
 import sys
 from pathlib import Path
 
+def load_config(path: Path):
+  suffix = path.suffix.lower()
+  text = path.read_text(encoding="utf-8")
+  if suffix in (".yml", ".yaml"):
+    import yaml  # type: ignore
+    return yaml.safe_load(text)
+  if suffix == ".json":
+    return json.loads(text)
+  if suffix == ".toml":
+    import tomllib
+    return tomllib.loads(text)
+  try:
+    return json.loads(text)
+  except Exception:
+    import yaml  # type: ignore
+    return yaml.safe_load(text)
+
 p = Path(sys.argv[1]).expanduser()
 host = sys.argv[2].strip()
 
@@ -370,7 +427,7 @@ if not p.is_file():
     print("")
     raise SystemExit(0)
 
-obj = json.loads(p.read_text(encoding="utf-8"))
+obj = load_config(p)
 if not isinstance(obj, dict):
     raise SystemExit(f"invalid proxy conf (expected object): {p}")
 
@@ -406,7 +463,7 @@ proxy_type=""
 proxy_host=""
 proxy_port=""
 
-proxy_blob="$(load_proxy_for_host "$PROXY_CONF_JSON" "$HOST")"
+proxy_blob="$(load_proxy_for_host "$PROXY_CONF" "$HOST")"
 if [[ -n "$proxy_blob" ]]; then
   proxy_type="$(printf '%s\n' "$proxy_blob" | sed -n '1p')"
   proxy_host="$(printf '%s\n' "$proxy_blob" | sed -n '2p')"
@@ -436,7 +493,7 @@ fi
 
 if [[ "$use_proxy" -eq 1 ]]; then
   if [[ -z "$proxy_type" || -z "$proxy_host" || -z "$proxy_port" ]]; then
-    echo "ERROR: connect=$CONNECT_MODE requires a proxy entry for $HOST in $PROXY_CONF_JSON" >&2
+    echo "ERROR: connect=$CONNECT_MODE requires a proxy entry for $HOST in $PROXY_CONF" >&2
     exit 2
   fi
   echo "==> proxy enabled for $HOST: type=$proxy_type via $proxy_host:$proxy_port" >&2
@@ -585,8 +642,50 @@ run_rsync_file() {
     "$src_file" "$USER@$HOST:$dest_file"
 }
 
+make_remote_job_conf() {
+  local src_conf="$1"
+  local dst_conf="$2"
+  local remote_hdf5="$3"
+  python3 - "$src_conf" "$dst_conf" "$remote_hdf5" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+def load_config(path: Path):
+  suffix = path.suffix.lower()
+  text = path.read_text(encoding="utf-8")
+  if suffix in (".yml", ".yaml"):
+    import yaml  # type: ignore
+    return yaml.safe_load(text)
+  if suffix == ".json":
+    return json.loads(text)
+  if suffix == ".toml":
+    import tomllib
+    return tomllib.loads(text)
+  try:
+    return json.loads(text)
+  except Exception:
+    import yaml  # type: ignore
+    return yaml.safe_load(text)
+
+src = Path(sys.argv[1]).expanduser().resolve()
+dst = Path(sys.argv[2]).expanduser().resolve()
+remote_hdf5 = str(sys.argv[3])
+
+obj = load_config(src)
+if not isinstance(obj, dict):
+  raise SystemExit(f"job conf must be a mapping/object: {src}")
+
+obj["hdf5"] = remote_hdf5
+
+dst.parent.mkdir(parents=True, exist_ok=True)
+dst.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+print(str(dst))
+PY
+}
+
 echo "==> Creating remote directories..."
-run_ssh_stream "mkdir -p $REMOTE_DIR/data"
+run_ssh_stream "mkdir -p $REMOTE_DIR $REMOTE_HDF5_DIR $REMOTE_DIR/DiskANN-playground/diskann-ann-bench/conf"
 
 sync_dir() {
   local src="$1"
@@ -605,9 +704,18 @@ sync_dir "$ANN_BENCH_DIR" "$REMOTE_DIR/ann-benchmark-epeshared"
 sync_dir "$PLAYGROUND_DIR" "$REMOTE_DIR/DiskANN-playground"
 
 # 3) 同步 HDF5 文件
-REMOTE_HDF5="$REMOTE_DIR/data/$HDF5_NAME"
 echo "==> Syncing HDF5 file $HDF5 to $USER@$HOST:$REMOTE_HDF5"
 run_rsync_file "$HDF5" "$REMOTE_HDF5"
+
+# 3.5) Generate+sync remote job conf (not included by dir rsync due to .gitignore)
+JOB_CONF_REMOTE_LOCAL="$LOG_DIR/job-conf.remote.json"
+JOB_CONF_REMOTE_ON_REMOTE="/tmp/diskann-ann-bench/job-conf.remote.json"
+echo "==> Generating remote job conf: $JOB_CONF_REMOTE_LOCAL (hdf5=$REMOTE_HDF5)" >&2
+make_remote_job_conf "$JOB_CONF" "$JOB_CONF_REMOTE_LOCAL" "$REMOTE_HDF5" >/dev/null
+echo "==> Ensuring remote temp dir exists: /tmp/diskann-ann-bench" >&2
+run_ssh_stream "mkdir -p /tmp/diskann-ann-bench"
+echo "==> Syncing remote job conf to $USER@$HOST:$JOB_CONF_REMOTE_ON_REMOTE" >&2
+run_rsync_file "$JOB_CONF_REMOTE_LOCAL" "$JOB_CONF_REMOTE_ON_REMOTE"
 
 # 6) 远端环境部署
 if [[ "$SETUP" -eq 1 ]]; then
@@ -628,10 +736,7 @@ fi"
 
 # 4) 在远端执行 run_local.sh
 echo "==> Executing run_local.sh on remote..."
-# 安全地格式化传递给 run_local.sh 的参数，防止空格被截断
-FORMATTED_ARGS=$(printf "%q " "${RUN_ARGS[@]}")
-
-run_ssh_stream_tty "source \$HOME/.cargo/env || true; source $REMOTE_DIR/.venv/bin/activate 2>/dev/null || true; export PYTHONUNBUFFERED=1; cd $REMOTE_DIR/DiskANN-playground/diskann-ann-bench; bash run_local.sh --hdf5 ../../data/$HDF5_NAME $FORMATTED_ARGS"
+run_ssh_stream_tty "source \$HOME/.cargo/env || true; source $REMOTE_DIR/.venv/bin/activate 2>/dev/null || true; export PYTHONUNBUFFERED=1; cd $REMOTE_DIR/DiskANN-playground/diskann-ann-bench; bash run_local.sh --conf /tmp/diskann-ann-bench/job-conf.remote.json"
 
 # 5) 将远端结果同步回本地
 echo "==> Fetching results back to local..."

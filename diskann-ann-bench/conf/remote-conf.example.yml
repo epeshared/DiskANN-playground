@@ -1,0 +1,24 @@
+# Remote connection configuration for run_remote.sh
+#
+# Copy this file to `remote-conf.yml` and edit it.
+
+# Remote host/IP.
+host: 101.43.139.29
+
+# SSH username.
+user: ubuntu
+
+# SSH port.
+port: 22
+
+# Remote workspace root directory.
+# This is where the repos will be synced to.
+remote_dir: ~/diskann-workspace
+
+# Connection mode.
+# Allowed:
+# - auto (default): use proxy if proxy-conf has an entry for this host, otherwise direct ssh
+# - ssh: always direct ssh
+# - socks / socks5: always use SOCKS5 proxy (requires proxy-conf entry)
+# - http: always use HTTP CONNECT proxy (requires proxy-conf entry)
+connect: auto

@@ -1,0 +1,151 @@
+# Job configuration for diskann-ann-bench
+#
+# This file is meant to be copied to `job-conf.yml` and edited.
+# It uses YAML so you can keep real `#` comments.
+
+# (required) Local path to the dataset .hdf5 file.
+# Must exist on the machine running run_local.sh; run_remote.sh will sync this file to the remote host.
+hdf5: /mnt/nvme2n1p1/xtang/ann-data/dbpedia-openai-1000k-angular.hdf5
+
+# Optional distance/metric override.
+# Use empty string to auto-detect from HDF5 attrs['distance'] (preferred).
+# Allowed: angular/cosine, l2/euclidean.
+metric: ""
+
+# Which stages to run.
+# Allowed: all (build+search), build (only build+save), search (only load+search; requires run_id/resume_runid or index_dir).
+stage: all
+
+# Run folder id under runs_dir/<dataset>/<run_id>.
+# Empty => auto-generate timestamp-based id.
+run_id: ""
+
+# Resume an existing run_id: skip completed cases and continue.
+# If set, it overrides run_id. Not compatible with index_dir.
+resume_runid: ""
+
+# Reuse a prebuilt index directory (host runner).
+# For stage=search, can be used instead of run_id.
+# Not compatible with run_all=true.
+index_dir: ""
+
+# Index cleanup behavior after successful stage=all.
+# Allowed: auto (delete only for auto-generated run_id), yes (always delete created indexes), no (keep indexes).
+# Never deletes content under an external index_dir.
+delete_index_after_run: auto
+
+# If true, run all presets from config_yml (optionally filtered by run_group_prefix_*).
+# If false, run a single case configured by run_group or by explicit l_build/max_outdegree/... params.
+run_all: true
+
+# Compare mode.
+# true => run both PQ + Spherical workflows.
+# false => run a single algo specified by algo (and optionally name/run_group).
+compare: true
+
+# Single-algo mode selector (used when compare=false, or when you are not using presets).
+# Allowed: fp, pq, spherical.
+algo: fp
+
+# Preset algo name from config_yml used with run_all=true and compare=false.
+name: ""
+
+# Preset PQ algo name from config_yml used with run_all=true and compare=true.
+name_pq: diskann-rs-pq-memory
+
+# Preset Spherical algo name from config_yml used with run_all=true and compare=true.
+# Note: this is memory index; DiskANN-rs disk/SSD index path is PQ-centric.
+name_spherical: diskann-rs-spherical-memory
+
+# When run_all=true and compare=true, only execute PQ run_groups whose names start with this prefix.
+# Empty => no filtering.
+run_group_prefix_pq: pq_100_32_1-2_
+
+# When run_all=true and compare=true, only execute Spherical run_groups whose names start with this prefix.
+# Empty => no filtering.
+run_group_prefix_spherical: spherical_100_32_1-2_
+
+# Graph build parameter L.
+l_build: 100
+
+# Graph degree (R).
+max_outdegree: 32
+
+# Build parameter alpha.
+alpha: 1.2
+
+# Top-k neighbors to query for (passed as -k).
+k: 100
+
+# Search parameter L (used when NOT using run_group presets). For sweeps, use l_search_list.
+l_search: 200
+
+# Number of repeated query runs per case to stabilize metrics.
+reps: 2
+
+# Query execution mode.
+# false => per-query loop; true => batch_query.
+batch: false
+
+# CPU affinity for the host runner. Format: "LO-HI" (e.g. "0-16").
+cpu_bind: 0-16
+
+# PQ-only parameter: number of PQ chunks (e.g., 96/128/192).
+# Required when algo=pq AND you are not using presets.
+# Use empty string when using run_group/run_all presets.
+num_pq_chunks: ""
+
+# Spherical-only parameter: bits per dimension.
+# Allowed: 1, 2, 4.
+spherical_nbits: 2
+
+# Comma-separated sweep values for l_search (e.g., "200,300,500").
+# When any *-list is set, it cannot be combined with run_all or run_group presets, and cannot use index_dir.
+l_search_list: ""
+
+# Comma-separated sweep values for num_pq_chunks (e.g., "96,128,192").
+num_pq_chunks_list: ""
+
+# Comma-separated sweep values for spherical_nbits (e.g., "2,4").
+spherical_nbits_list: ""
+
+# Tri-state bool controlling translate-to-center for PQ.
+# Allowed: null (do not pass flag), true (force --translate-to-center), false (force --no-translate-to-center).
+translate_to_center: null
+
+# Path to diskann_rs config.yml containing algo presets and run_groups.
+# Empty => use repo default.
+config_yml: ""
+
+# Preset run_group name from config_yml (single mode).
+# Only used when compare=false and run_all=false.
+run_group: ""
+
+# Preset run_group name for PQ side in compare mode when run_all=false.
+# If set, you must also set run_group_spherical.
+run_group_pq: ""
+
+# Preset run_group name for spherical side in compare mode when run_all=false.
+# If set, you must also set run_group_pq.
+run_group_spherical: ""
+
+# Native extension build profile for diskann_rs_native.
+# Allowed: release (default) or debug.
+diskann_rs_native_profile: release
+
+# Controls DISKANN_RS_FIT_BATCH_SIZE env var for training/fit batching.
+fit_batch_size: 20000
+
+# Root output directory. Empty => default to DiskANN-playground/diskann-ann-bench/result.
+runs_dir: ""
+
+# (run_remote.sh only) Destination directory on remote to store the synced HDF5.
+# If relative, it is interpreted relative to remote_dir from remote-conf.*.
+# Empty => remote_dir/data.
+remote_hdf5_dir: /home/USER/ann-data
+
+# (run_remote.sh only) If true, run remote environment setup step before executing the job.
+remote_setup: false
+
+# (run_remote.sh only) If true, print planned remote actions/commands but do not execute.
+remote_dry_run: false

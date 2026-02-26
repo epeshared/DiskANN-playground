@@ -1,7 +1,0 @@
-{
-	"101.43.139.29": {
-		"type": "socks",
-		"host": "proxy.xxx.com",
-		"port": 1080
-	}
-}
