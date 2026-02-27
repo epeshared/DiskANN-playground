@@ -17,20 +17,18 @@
       <div class="panel" style="margin:0">
         <div class="h2" style="margin-top:0">A: {{ run_a.id }}</div>
         <div class="kv">
-          <div class="k">mode</div><div><span class="badge">{{ run_a.mode or '' }}</span></div>
+          <div class="k">name</div><div><span class="badge">{{ run_a.name or run_a.mode or '' }}</span></div>
           <div class="k">query</div><div>{{ run_a.query_mode or '' }}</div>
           <div class="k">cpu_bind</div><div>{{ run_a.cpu_bind or '' }}</div>
-          <div class="k">cpu</div><div>{{ run_a.cpu_model or '' }}</div>
           <div class="k">cpu info</div><div><pre style="margin:0;white-space:pre-wrap">{{ run_a.lscpu_info or '' }}</pre></div>
         </div>
       </div>
       <div class="panel" style="margin:0">
         <div class="h2" style="margin-top:0">B: {{ run_b.id }}</div>
         <div class="kv">
-          <div class="k">mode</div><div><span class="badge">{{ run_b.mode or '' }}</span></div>
+          <div class="k">name</div><div><span class="badge">{{ run_b.name or run_b.mode or '' }}</span></div>
           <div class="k">query</div><div>{{ run_b.query_mode or '' }}</div>
           <div class="k">cpu_bind</div><div>{{ run_b.cpu_bind or '' }}</div>
-          <div class="k">cpu</div><div>{{ run_b.cpu_model or '' }}</div>
           <div class="k">cpu info</div><div><pre style="margin:0;white-space:pre-wrap">{{ run_b.lscpu_info or '' }}</pre></div>
         </div>
       </div>
@@ -43,38 +41,40 @@
       <a class="btn" id="download-pq-csv" href="/api/compare/{{ dataset | urlencode }}/pq.xlsx?a={{ run_a.id | urlencode }}&b={{ run_b.id | urlencode }}&ratio=ab">Download PQ compare.xlsx</a>
     </div>
     {% if pq_cmp.available %}
-      <table class="table">
-        <thead>
-          <tr>
-            {% for k in pq_cmp.key_fields %}<th>{{ k }}</th>{% endfor %}
-            <th>recall_at_k (A)</th>
-            <th>recall_at_k (B)</th>
-            <th class="ratio-head" data-a-col="recall_a" data-b-col="recall_b">recall_at_k (A/B)</th>
-            <th>qps_mean (A)</th>
-            <th>qps_mean (B)</th>
-            <th class="ratio-head" data-a-col="qps_a" data-b-col="qps_b">qps_mean (A/B)</th>
-            <th>lat_p99_us (A)</th>
-            <th>lat_p99_us (B)</th>
-            <th class="ratio-head" data-a-col="p99_a" data-b-col="p99_b">lat_p99_us (A/B)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for r in pq_cmp.rows %}
+      <div class="table-scroll-x">
+        <table class="table">
+          <thead>
             <tr>
-              {% for k in pq_cmp.key_fields %}<td>{{ r[k] }}</td>{% endfor %}
-              <td data-col="recall_a">{{ r.recall_a }}</td>
-              <td data-col="recall_b">{{ r.recall_b }}</td>
-              <td data-ratio data-a-col="recall_a" data-b-col="recall_b">{{ r.recall_ratio }}</td>
-              <td data-col="qps_a">{{ r.qps_a }}</td>
-              <td data-col="qps_b">{{ r.qps_b }}</td>
-              <td data-ratio data-a-col="qps_a" data-b-col="qps_b">{{ r.qps_ratio }}</td>
-              <td data-col="p99_a">{{ r.p99_a }}</td>
-              <td data-col="p99_b">{{ r.p99_b }}</td>
-              <td data-ratio data-a-col="p99_a" data-b-col="p99_b">{{ r.p99_ratio }}</td>
+              {% for k in pq_cmp.key_fields %}<th>{{ k }}</th>{% endfor %}
+              <th>recall_at_k (A)</th>
+              <th>recall_at_k (B)</th>
+              <th class="ratio-head" data-a-col="recall_a" data-b-col="recall_b">recall_at_k (A/B)</th>
+              <th>qps_mean (A)</th>
+              <th>qps_mean (B)</th>
+              <th class="ratio-head" data-a-col="qps_a" data-b-col="qps_b">qps_mean (A/B)</th>
+              <th>lat_p99_us (A)</th>
+              <th>lat_p99_us (B)</th>
+              <th class="ratio-head" data-a-col="p99_a" data-b-col="p99_b">lat_p99_us (A/B)</th>
             </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {% for r in pq_cmp.rows %}
+              <tr>
+                {% for k in pq_cmp.key_fields %}<td>{{ r[k] }}</td>{% endfor %}
+                <td data-col="recall_a">{{ r.recall_a }}</td>
+                <td data-col="recall_b">{{ r.recall_b }}</td>
+                <td data-ratio data-a-col="recall_a" data-b-col="recall_b">{{ r.recall_ratio }}</td>
+                <td data-col="qps_a">{{ r.qps_a }}</td>
+                <td data-col="qps_b">{{ r.qps_b }}</td>
+                <td data-ratio data-a-col="qps_a" data-b-col="qps_b">{{ r.qps_ratio }}</td>
+                <td data-col="p99_a">{{ r.p99_a }}</td>
+                <td data-col="p99_b">{{ r.p99_b }}</td>
+                <td data-ratio data-a-col="p99_a" data-b-col="p99_b">{{ r.p99_ratio }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     {% else %}
       <div class="small">Both runs must contain <span class="badge">summary.pq.csv</span> to compare PQ.</div>
     {% endif %}
@@ -86,40 +86,42 @@
       <a class="btn" id="download-spherical-csv" href="/api/compare/{{ dataset | urlencode }}/spherical.xlsx?a={{ run_a.id | urlencode }}&b={{ run_b.id | urlencode }}&ratio=ab">Download Spherical compare.xlsx</a>
     </div>
     {% if spherical_cmp.available %}
-      <table class="table">
-        <thead>
-          <tr>
-            {% for k in spherical_cmp.key_fields %}<th>{{ k }}</th>{% endfor %}
-            <th>recall_at_k (A)</th>
-            <th>recall_at_k (B)</th>
-            <th class="ratio-head" data-a-col="recall_a" data-b-col="recall_b">recall_at_k (A/B)</th>
-            <th>qps_mean (A)</th>
-            <th>qps_mean (B)</th>
-            <th class="ratio-head" data-a-col="qps_a" data-b-col="qps_b">qps_mean (A/B)</th>
-            <th>lat_p99_us (A)</th>
-            <th>lat_p99_us (B)</th>
-            <th class="ratio-head" data-a-col="p99_a" data-b-col="p99_b">lat_p99_us (A/B)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for r in spherical_cmp.rows %}
+      <div class="table-scroll-x">
+        <table class="table">
+          <thead>
             <tr>
-              {% for k in spherical_cmp.key_fields %}<td>{{ r[k] }}</td>{% endfor %}
-              <td data-col="recall_a">{{ r.recall_a }}</td>
-              <td data-col="recall_b">{{ r.recall_b }}</td>
-              <td data-ratio data-a-col="recall_a" data-b-col="recall_b">{{ r.recall_ratio }}</td>
-              <td data-col="qps_a">{{ r.qps_a }}</td>
-              <td data-col="qps_b">{{ r.qps_b }}</td>
-              <td data-ratio data-a-col="qps_a" data-b-col="qps_b">{{ r.qps_ratio }}</td>
-              <td data-col="p99_a">{{ r.p99_a }}</td>
-              <td data-col="p99_b">{{ r.p99_b }}</td>
-              <td data-ratio data-a-col="p99_a" data-b-col="p99_b">{{ r.p99_ratio }}</td>
+              {% for k in spherical_cmp.key_fields %}<th>{{ k }}</th>{% endfor %}
+              <th>recall_at_k (A)</th>
+              <th>recall_at_k (B)</th>
+              <th class="ratio-head" data-a-col="recall_a" data-b-col="recall_b">recall_at_k (A/B)</th>
+              <th>qps_mean (A)</th>
+              <th>qps_mean (B)</th>
+              <th class="ratio-head" data-a-col="qps_a" data-b-col="qps_b">qps_mean (A/B)</th>
+              <th>lat_p99_us (A)</th>
+              <th>lat_p99_us (B)</th>
+              <th class="ratio-head" data-a-col="p99_a" data-b-col="p99_b">lat_p99_us (A/B)</th>
             </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {% for r in spherical_cmp.rows %}
+              <tr>
+                {% for k in spherical_cmp.key_fields %}<td>{{ r[k] }}</td>{% endfor %}
+                <td data-col="recall_a">{{ r.recall_a }}</td>
+                <td data-col="recall_b">{{ r.recall_b }}</td>
+                <td data-ratio data-a-col="recall_a" data-b-col="recall_b">{{ r.recall_ratio }}</td>
+                <td data-col="qps_a">{{ r.qps_a }}</td>
+                <td data-col="qps_b">{{ r.qps_b }}</td>
+                <td data-ratio data-a-col="qps_a" data-b-col="qps_b">{{ r.qps_ratio }}</td>
+                <td data-col="p99_a">{{ r.p99_a }}</td>
+                <td data-col="p99_b">{{ r.p99_b }}</td>
+                <td data-ratio data-a-col="p99_a" data-b-col="p99_b">{{ r.p99_ratio }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     {% else %}
-      <div class="small">Both runs must contain <span class="badge">summary.spherical.csv</span> to compare spherical.</div>
+      <div class="small">Both runs must contain <span class="badge">summary.spherical.csv</span> to compare Spherical.</div>
     {% endif %}
   </div>
 

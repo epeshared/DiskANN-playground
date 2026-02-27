@@ -3,6 +3,7 @@
   <div class="panel">
     <div class="h2">Datasets</div>
     {% if datasets %}
+      <div class="table-scroll-x">
       <table class="table">
         <thead><tr><th>dataset</th><th>runs</th></tr></thead>
         <tbody>
@@ -14,6 +15,7 @@
           {% endfor %}
         </tbody>
       </table>
+      </div>
     {% else %}
       <div class="small">No datasets found under runs_dir.</div>
     {% endif %}

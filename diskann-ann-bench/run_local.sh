@@ -38,6 +38,15 @@ INDEX_DIR=""
 RESUME_RUN_ID=""
 INDEX_RUN_ID=""
 
+# Optional: repeat-search mode (for benchmarking stability / throughput).
+# - search_repeat: integer repeat count applied to ALL search cases in this run.
+# - search_repeat_thresh_hold: seconds; for each case, run once to measure t, then repeat = floor(thresh / t).
+#   (Repeat count includes the first run, i.e., total runs per case.)
+# Mutually exclusive: only one of these may be set.
+SEARCH_REPEAT=""
+SEARCH_REPEAT_THRESH_HOLD=""
+SEARCH_REPEAT_BANNER_PRINTED=0
+
 # Index cleanup control:
 # - auto: delete indexes only for auto timestamp-based runs (default)
 # - yes: delete created indexes under the run folder
@@ -292,6 +301,9 @@ emit("RUN_GROUP_SPHERICAL", obj.get("run_group_spherical"))
 emit("DISKANN_RS_NATIVE_PROFILE", obj.get("diskann_rs_native_profile"))
 emit("DISKANN_RS_FIT_BATCH_SIZE", obj.get("fit_batch_size"))
 emit("RUNS_DIR", obj.get("runs_dir"))
+
+emit("SEARCH_REPEAT", obj.get("search_repeat"))
+emit("SEARCH_REPEAT_THRESH_HOLD", obj.get("search_repeat_thresh_hold"))
 PY
 }
 
@@ -470,6 +482,54 @@ STAGE="${STAGE,,}"
 if [[ "$STAGE" != "all" && "$STAGE" != "build" && "$STAGE" != "search" && "$STAGE" != "native" ]]; then
   echo "ERROR: invalid --stage=$STAGE (expected: all|build|search|native)" >&2
   exit 2
+fi
+
+is_number() {
+  # Accept integer or float (e.g. 10, 10.5)
+  [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]]
+}
+
+compute_repeat_from_thresh() {
+  local thresh_s="$1"; shift
+  local t_s="$1"; shift
+  "$PYTHON_BIN" - "$thresh_s" "$t_s" <<'PY'
+import math
+import sys
+
+thresh = float(sys.argv[1])
+t = float(sys.argv[2])
+if thresh <= 0 or t <= 0:
+    print(1)
+else:
+    print(max(1, int(math.floor(thresh / t))))
+PY
+}
+
+if [[ -n "$SEARCH_REPEAT" && -n "$SEARCH_REPEAT_THRESH_HOLD" ]]; then
+  echo "ERROR: search_repeat_thresh_hold cannot be combined with search_repeat" >&2
+  exit 2
+fi
+
+if [[ -n "$SEARCH_REPEAT" ]]; then
+  if [[ "$STAGE" != "search" ]]; then
+    echo "ERROR: search_repeat is only supported with stage=search" >&2
+    exit 2
+  fi
+  if [[ ! "$SEARCH_REPEAT" =~ ^[0-9]+$ ]] || [[ "$SEARCH_REPEAT" -lt 1 ]]; then
+    echo "ERROR: search_repeat must be a positive integer (got: $SEARCH_REPEAT)" >&2
+    exit 2
+  fi
+fi
+
+if [[ -n "$SEARCH_REPEAT_THRESH_HOLD" ]]; then
+  if [[ "$STAGE" != "search" ]]; then
+    echo "ERROR: search_repeat_thresh_hold is only supported with stage=search" >&2
+    exit 2
+  fi
+  if ! is_number "$SEARCH_REPEAT_THRESH_HOLD"; then
+    echo "ERROR: invalid search_repeat_thresh_hold (expected seconds as number): $SEARCH_REPEAT_THRESH_HOLD" >&2
+    exit 2
+  fi
 fi
 
 if [[ -n "$INDEX_RUN_ID" && "$STAGE" != "search" ]]; then
@@ -691,6 +751,7 @@ import sys
 import json
 import csv
 import re
+import statistics
 from pathlib import Path
 
 work_dir = Path(sys.argv[1]).resolve()
@@ -711,6 +772,11 @@ build_params_by_index_prefix = {}
 
 csv_rows_pq = []
 csv_rows_spherical = []
+
+# Aggregation for repeated search runs (case_id suffix "__repNNN").
+# Written as a separate CSV so we don't change existing UI behavior.
+repeat_groups = {}  # base_case_id -> list[dict]
+_re_rep_suffix = re.compile(r"^(?P<base>.+)__rep(?P<rep>\d{3}|_combined)$")
 
 COMMON_FIELDS = [
   "case",
@@ -763,6 +829,34 @@ PERF_2DP_FIELDS = {
   "lat_p99_us",
   "load_index_s",
 }
+
+
+def _to_float(v):
+  if v is None:
+    return None
+  if isinstance(v, (int, float)):
+    return float(v)
+  s = str(v).strip()
+  if not s:
+    return None
+  try:
+    return float(s)
+  except Exception:
+    return None
+
+
+def _mean(vals):
+  vals = [v for v in vals if v is not None]
+  if not vals:
+    return None
+  return sum(vals) / len(vals)
+
+
+def _median(vals):
+  vals = [v for v in vals if v is not None]
+  if not vals:
+    return None
+  return statistics.median(vals)
 
 
 def _as_str(v):
@@ -929,6 +1023,37 @@ if cases_dir.is_dir():
               )
               csv_rows_spherical.append(row)
 
+            # Collect repeat-run metrics for aggregation.
+            mrep = _re_rep_suffix.match(case_id)
+            if mrep:
+              base_case_id = mrep.group("base")
+              repeat_groups.setdefault(base_case_id, []).append(
+                {
+                  "case": base_case_id,
+                  "repeats": case_id,
+                  "algo": algo,
+                  "distance": _as_str(distance),
+                  "k": _as_str(_get(search_obj, build_obj, "k")),
+                  "l_search": _as_str(_get(search_obj, build_obj, "l_search")),
+                  "reps": _as_str(_get(search_obj, build_obj, "reps")),
+                  "index_prefix": index_prefix_val,
+                  "l_build": _as_str(_get(search_obj, build_obj, "l_build")),
+                  "max_outdegree": _as_str(_get(search_obj, build_obj, "max_outdegree")),
+                  "alpha": _as_str(_get(search_obj, build_obj, "alpha")),
+                  "num_pq_chunks": _as_str(_get(search_obj, build_obj, "num_pq_chunks")),
+                  "translate_to_center": _as_str(_get(search_obj, build_obj, "translate_to_center")),
+                  "nbits": _as_str(_get(search_obj, build_obj, "nbits")),
+                  "peak_tps": _to_float(_get(search_obj, build_obj, "peak_tps")),
+                  "qps_mean": _to_float(_get(search_obj, build_obj, "qps_mean")),
+                  "lat_mean_us": _to_float(_get(search_obj, build_obj, "lat_mean_us")),
+                  "lat_p50_us": _to_float(_get(search_obj, build_obj, "lat_p50_us")),
+                  "lat_p95_us": _to_float(_get(search_obj, build_obj, "lat_p95_us")),
+                  "lat_p99_us": _to_float(_get(search_obj, build_obj, "lat_p99_us")),
+                  "recall_at_k": _to_float(_get(search_obj, build_obj, "recall_at_k")),
+                  "load_index_s": _to_float(_get(search_obj, build_obj, "load_index_s")),
+                }
+              )
+
 if summary_header is not None:
     out = ["\t".join(summary_header)]
     out += ["\t".join(row) for row in summary_rows]
@@ -951,6 +1076,87 @@ def _write_csv(path: Path, rows, fieldnames):
 
 _write_csv(out_dir / "summary.pq.csv", csv_rows_pq, PQ_FIELDS)
 _write_csv(out_dir / "summary.spherical.csv", csv_rows_spherical, SPHERICAL_FIELDS)
+
+
+def _write_repeat_agg_csv(path: Path, groups: dict):
+    if not groups:
+        return
+
+    METRICS = [
+      "peak_tps",
+      "qps_mean",
+      "lat_mean_us",
+      "lat_p50_us",
+      "lat_p95_us",
+      "lat_p99_us",
+      "recall_at_k",
+      "load_index_s",
+    ]
+
+    fieldnames = [
+      "case",
+      "repeat_count",
+      "algo",
+      "distance",
+      "k",
+      "l_search",
+      "reps",
+      "index_prefix",
+      "l_build",
+      "max_outdegree",
+      "alpha",
+      "num_pq_chunks",
+      "translate_to_center",
+      "nbits",
+    ]
+    for m in METRICS:
+      fieldnames.append(f"{m}_mean")
+      fieldnames.append(f"{m}_median")
+
+    rows = []
+    for base_case_id, items in sorted(groups.items(), key=lambda kv: kv[0]):
+      if not items:
+        continue
+      # Prefer first non-empty context fields.
+      ctx = {}
+      for key in ("algo", "distance", "k", "l_search", "reps", "index_prefix", "l_build", "max_outdegree", "alpha", "num_pq_chunks", "translate_to_center", "nbits"):
+        v = ""
+        for it in items:
+          cand = it.get(key, "")
+          if cand not in (None, ""):
+            v = cand
+            break
+        ctx[key] = _as_str(v)
+
+      row = {
+        "case": base_case_id,
+        "repeat_count": str(len(items)),
+        **ctx,
+      }
+
+      for m in METRICS:
+        vals = [it.get(m) for it in items]
+        row[f"{m}_mean"] = _as_str(_mean(vals))
+        row[f"{m}_median"] = _as_str(_median(vals))
+      rows.append(row)
+
+    if not rows:
+      return
+
+    with path.open("w", encoding="utf-8", newline="") as f:
+      w = csv.DictWriter(f, fieldnames=fieldnames)
+      w.writeheader()
+      for r in rows:
+        row = dict(r)
+        # 2dp-format the numeric aggregates for readability.
+        for m in METRICS:
+          for suf in ("mean", "median"):
+            k = f"{m}_{suf}"
+            row[k] = _fmt_2dp(str(row.get(k, "")))
+        w.writerow(row)
+
+
+_write_repeat_agg_csv(out_dir / "summary.repeat_agg.csv", repeat_groups)
 
 (out_dir / "details.md").write_text("\n".join(details_parts).rstrip() + "\n", encoding="utf-8")
 
@@ -1016,6 +1222,11 @@ echo "    work dir: $WORK_DIR"
 
 mkdir -p "$ROOT_CASES_DIR" "$WORK_DIR/outputs"
 echo "ann_bench_diskann_rs" > "$WORK_DIR/mode.txt"
+if [[ -n "$NAME" ]]; then
+  echo "$NAME" > "$WORK_DIR/name.txt"
+elif [[ "$COMPARE" -eq 1 ]]; then
+  echo "${NAME_PQ} + ${NAME_SPHERICAL}" > "$WORK_DIR/name.txt"
+fi
 echo "$CPU_BIND" > "$WORK_DIR/cpu-bind.txt"
 echo "$BATCH" > "$WORK_DIR/batch.txt"
 
@@ -1149,9 +1360,16 @@ run_one() {
   local run_group_for_algo="${1:-}"; shift || true
   local stage_override="${1:-}"; shift || true
   local index_dir_override="${1:-}"; shift || true
+  local case_id_suffix="${1:-}"; shift || true
+  local index_case_id_raw_override="${1:-}"; shift || true
   local case_id
   case_id="$(sanitize_case_id "$case_id_raw")"
+  if [[ -n "$case_id_suffix" ]]; then
+    case_id="${case_id}__${case_id_suffix}"
+  fi
   local work_dir_full="$ROOT_CASES_DIR/$case_id"
+  local index_case_id
+  index_case_id="$(sanitize_case_id "${index_case_id_raw_override:-$case_id_raw}")"
 
   local stage_to_use
   stage_to_use="${stage_override:-$STAGE}"
@@ -1214,14 +1432,28 @@ run_one() {
   cmd=("${affinity_prefix[@]}" "$PYTHON_BIN" "$SCRIPT_DIR/src/framework_entry.py")
   cmd+=(--work-dir "$work_dir_full")
   cmd+=("${invocation_args[@]}")
-  if [[ -n "$index_dir_override" ]]; then
-    mkdir -p "$index_dir_override"
-    cmd+=(--index-dir "$index_dir_override")
+  local effective_index_dir_override="$index_dir_override"
+  if [[ -z "$effective_index_dir_override" && -n "$case_id_suffix" && "$stage_to_use" == "search" && -z "$INDEX_DIR" && -z "$INDEX_RUN_ID" ]]; then
+    # Repeated search runs write into a new case directory; reuse the base case's built index.
+    effective_index_dir_override="$ROOT_CASES_DIR/$index_case_id/index"
+  fi
+
+  if [[ -n "$effective_index_dir_override" ]]; then
+    if [[ "$stage_to_use" == "search" ]]; then
+      if [[ ! -d "$effective_index_dir_override" ]]; then
+        echo "ERROR: index dir not found for repeated search: $effective_index_dir_override" >&2
+        echo "Hint: ensure the base case has a built index, or use index_dir / index_dir-as-runid." >&2
+        exit 2
+      fi
+    else
+      mkdir -p "$effective_index_dir_override"
+    fi
+    cmd+=(--index-dir "$effective_index_dir_override")
   elif [[ -n "$INDEX_DIR" ]]; then
     cmd+=(--index-dir "$INDEX_DIR")
   elif [[ -n "$INDEX_RUN_ID" && "$stage_to_use" == "search" ]]; then
     # Reuse per-case index artifacts from an existing run.
-    prior_index_dir="$(index_dir_from_runid_for_case "$INDEX_RUN_ID" "$case_id")"
+    prior_index_dir="$(index_dir_from_runid_for_case "$INDEX_RUN_ID" "$index_case_id")"
     validate_index_dir_for_case "$algo" "$prior_index_dir"
     cmd+=(--index-dir "$prior_index_dir")
   fi
@@ -1231,6 +1463,48 @@ run_one() {
   # Mark completion and refresh aggregated outputs.
   touch "$(case_done_marker_path "$work_dir_full" "$stage_to_use")"
   merge_root_outputs || true
+}
+
+run_case() {
+  # Wrapper around run_one that applies repeat-search settings to any case whose stage is "search".
+  local algo="$1"; shift
+  local case_id_raw="$1"; shift
+  local run_group_for_algo="${1:-}"; shift || true
+  local stage_override="${1:-}"; shift || true
+  local index_dir_override="${1:-}"; shift || true
+
+  local stage_to_use
+  stage_to_use="${stage_override:-$STAGE}"
+
+  if [[ "$stage_to_use" != "search" ]] || [[ -z "$SEARCH_REPEAT" && -z "$SEARCH_REPEAT_THRESH_HOLD" ]]; then
+    run_one "$algo" "$case_id_raw" "$run_group_for_algo" "$stage_override" "$index_dir_override"
+    return 0
+  fi
+
+  if [[ "$SEARCH_REPEAT_BANNER_PRINTED" -eq 0 ]]; then
+    if [[ -n "$SEARCH_REPEAT" ]]; then
+      echo "==> search_repeat: setting REPS=${SEARCH_REPEAT} for each case" >&2
+    else
+      echo "==> search_repeat_thresh_hold: per-case adaptive REPS (thresh=${SEARCH_REPEAT_THRESH_HOLD}s)" >&2
+    fi
+    SEARCH_REPEAT_BANNER_PRINTED=1
+  fi
+
+  if [[ -n "$SEARCH_REPEAT" ]]; then
+    REPS="$SEARCH_REPEAT"
+    run_one "$algo" "$case_id_raw" "$run_group_for_algo" "search" "$index_dir_override" "rep_combined" "$case_id_raw"
+    return 0
+  fi
+
+  if [[ -n "$SEARCH_REPEAT_THRESH_HOLD" ]]; then
+    # We don't know how long a single run takes, so we can't pre-calculate REPS.
+    # We will pass the threshold to the python script and let it handle the adaptive repeats internally.
+    # For now, we just pass the threshold via an environment variable.
+    export DISKANN_SEARCH_REPEAT_THRESH_HOLD="$SEARCH_REPEAT_THRESH_HOLD"
+    run_one "$algo" "$case_id_raw" "$run_group_for_algo" "search" "$index_dir_override" "rep_combined" "$case_id_raw"
+    unset DISKANN_SEARCH_REPEAT_THRESH_HOLD
+    return 0
+  fi
 }
 
 if [[ "$COMPARE" -eq 1 ]]; then
@@ -1284,25 +1558,25 @@ if [[ "$COMPARE" -eq 1 ]]; then
         mapfile -t rows < <(printf "%b" "${pq_map[$base]}" | sort -n -k1,1)
         if [[ "$STAGE" == "build" ]]; then
           rg0="${rows[0]#*$'\t'}"
-          run_one pq "pq-$base-build" "$rg0" build "$index_dir"
+          run_case pq "pq-$base-build" "$rg0" build "$index_dir"
         elif [[ "$STAGE" == "search" ]]; then
           for row in "${rows[@]}"; do
             rgx="${row#*$'\t'}"
-            run_one pq "pq-$rgx" "$rgx" search "$index_dir"
+            run_case pq "pq-$rgx" "$rgx" search "$index_dir"
           done
         else
           # all
           rg0="${rows[0]#*$'\t'}"
-          run_one pq "pq-$rg0" "$rg0" all "$index_dir"
+          run_case pq "pq-$rg0" "$rg0" all "$index_dir"
           for row in "${rows[@]:1}"; do
             rgx="${row#*$'\t'}"
-            run_one pq "pq-$rgx" "$rgx" search "$index_dir"
+            run_case pq "pq-$rgx" "$rgx" search "$index_dir"
           done
         fi
       done
     else
       for rg in "${pq_groups[@]}"; do
-        run_one pq "pq-$rg" "$rg"
+        run_case pq "pq-$rg" "$rg"
       done
     fi
 
@@ -1318,30 +1592,30 @@ if [[ "$COMPARE" -eq 1 ]]; then
         mapfile -t rows < <(printf "%b" "${spherical_map[$base]}" | sort -n -k1,1)
         if [[ "$STAGE" == "build" ]]; then
           rg0="${rows[0]#*$'\t'}"
-          run_one spherical "spherical-$base-build" "$rg0" build "$index_dir"
+          run_case spherical "spherical-$base-build" "$rg0" build "$index_dir"
         elif [[ "$STAGE" == "search" ]]; then
           for row in "${rows[@]}"; do
             rgx="${row#*$'\t'}"
-            run_one spherical "spherical-$rgx" "$rgx" search "$index_dir"
+            run_case spherical "spherical-$rgx" "$rgx" search "$index_dir"
           done
         else
           rg0="${rows[0]#*$'\t'}"
-          run_one spherical "spherical-$rg0" "$rg0" all "$index_dir"
+          run_case spherical "spherical-$rg0" "$rg0" all "$index_dir"
           for row in "${rows[@]:1}"; do
             rgx="${row#*$'\t'}"
-            run_one spherical "spherical-$rgx" "$rgx" search "$index_dir"
+            run_case spherical "spherical-$rgx" "$rgx" search "$index_dir"
           done
         fi
       done
     else
       for rg in "${spherical_groups[@]}"; do
-        run_one spherical "spherical-$rg" "$rg"
+        run_case spherical "spherical-$rg" "$rg"
       done
     fi
   else
     if [[ -n "$RUN_GROUP_PQ" && -n "$RUN_GROUP_SPHERICAL" ]]; then
-      run_one pq "pq" "$RUN_GROUP_PQ"
-      run_one spherical "spherical" "$RUN_GROUP_SPHERICAL"
+      run_case pq "pq" "$RUN_GROUP_PQ"
+      run_case spherical "spherical" "$RUN_GROUP_SPHERICAL"
     else
       if [[ "$HAS_LIST_SWEEP" -eq 1 ]]; then
         if [[ ${#NUM_PQ_CHUNKS_VALUES[@]} -eq 0 ]]; then
@@ -1353,7 +1627,7 @@ if [[ "$COMPARE" -eq 1 ]]; then
           for l in "${L_SEARCH_VALUES[@]}"; do
             NUM_PQ_CHUNKS="$pq_chunks"
             L_SEARCH="$l"
-            run_one pq "pq_chunks${pq_chunks}_L${l}"
+            run_case pq "pq_chunks${pq_chunks}_L${l}"
           done
         done
 
@@ -1361,12 +1635,12 @@ if [[ "$COMPARE" -eq 1 ]]; then
           for l in "${L_SEARCH_VALUES[@]}"; do
             SPHERICAL_NBITS="$nbits"
             L_SEARCH="$l"
-            run_one spherical "spherical_${nbits}b_L${l}"
+            run_case spherical "spherical_${nbits}b_L${l}"
           done
         done
       else
-        run_one pq "pq"
-        run_one spherical "spherical"
+        run_case pq "pq"
+        run_case spherical "spherical"
       fi
     fi
   fi
@@ -1374,11 +1648,11 @@ else
   if [[ "$RUN_ALL" -eq 1 ]]; then
     mapfile -t groups < <(get_run_groups_by_name "$NAME" "$METRIC" "$CONFIG_YML")
     for rg in "${groups[@]}"; do
-      run_one "$ALGO" "$ALGO-$rg" "$rg"
+      run_case "$ALGO" "$ALGO-$rg" "$rg"
     done
   else
     if [[ -n "$RUN_GROUP" ]]; then
-      run_one "$ALGO" "$ALGO" "$RUN_GROUP"
+      run_case "$ALGO" "$ALGO" "$RUN_GROUP"
     else
       if [[ "$HAS_LIST_SWEEP" -eq 1 ]]; then
         if [[ "$ALGO" == "pq" ]]; then
@@ -1390,7 +1664,7 @@ else
             for l in "${L_SEARCH_VALUES[@]}"; do
               NUM_PQ_CHUNKS="$pq_chunks"
               L_SEARCH="$l"
-              run_one pq "pq_chunks${pq_chunks}_L${l}"
+              run_case pq "pq_chunks${pq_chunks}_L${l}"
             done
           done
         elif [[ "$ALGO" == "spherical" ]]; then
@@ -1398,17 +1672,17 @@ else
             for l in "${L_SEARCH_VALUES[@]}"; do
               SPHERICAL_NBITS="$nbits"
               L_SEARCH="$l"
-              run_one spherical "spherical_${nbits}b_L${l}"
+              run_case spherical "spherical_${nbits}b_L${l}"
             done
           done
         else
           for l in "${L_SEARCH_VALUES[@]}"; do
             L_SEARCH="$l"
-            run_one fp "fp_L${l}"
+            run_case fp "fp_L${l}"
           done
         fi
       else
-        run_one "$ALGO" "$ALGO"
+        run_case "$ALGO" "$ALGO"
       fi
     fi
   fi

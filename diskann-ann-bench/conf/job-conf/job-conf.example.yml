@@ -87,6 +87,16 @@ l_search: 200
 # Number of repeated query runs per case to stabilize metrics.
 reps: 2
 
+# Repeat the entire case execution (stage=search only).
+# This repeats *all* search cases in this run. Each repeat writes into a separate case directory
+# suffix (__rep001/__rep002/...) so outputs don't overwrite.
+#
+# Mutually exclusive:
+# - search_repeat: fixed integer repeat count per case
+# - search_repeat_thresh_hold: seconds; per case, run once to measure t, then repeat = floor(thresh / t)
+search_repeat: ""
+search_repeat_thresh_hold: ""
+
 # Query execution mode.
 # false => per-query loop; true => batch_query.
 batch: false

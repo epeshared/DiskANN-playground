@@ -56,6 +56,13 @@ reps: 1
 batch: false
 cpu_bind: 0-16
 
+# Repeat the entire case execution (stage=search only).
+# Mutually exclusive:
+# - search_repeat: fixed integer repeat count per case
+# - search_repeat_thresh_hold: seconds; per case, run once to measure t, then repeat = floor(thresh / t)
+search_repeat: ""
+search_repeat_thresh_hold: ""
+
 # Optional override of ann-benchmark diskann_rs/config.yml.
 # Empty => use repo default (recommended).
 config_yml: ""

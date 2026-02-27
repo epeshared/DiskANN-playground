@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -308,6 +309,34 @@ def _run_queries(
 
     if reps <= 0:
         raise ValueError("reps must be >= 1")
+
+    thresh_hold_str = os.environ.get("DISKANN_SEARCH_REPEAT_THRESH_HOLD")
+    if thresh_hold_str:
+        try:
+            thresh_hold = float(thresh_hold_str)
+        except ValueError:
+            thresh_hold = 0.0
+    else:
+        thresh_hold = 0.0
+
+    # If thresh_hold is set, we run once to measure time, then calculate reps
+    if thresh_hold > 0:
+        t_start = time.perf_counter()
+        if batch:
+            algo.batch_query(X_test, k)
+            algo.get_batch_results()
+        else:
+            for v in X_test:
+                algo.query(v, k)
+        t_end = time.perf_counter()
+        t_s = t_end - t_start
+        
+        if t_s > 0:
+            reps = max(1, int(math.floor(thresh_hold / t_s)))
+        else:
+            reps = 1
+        print(f"==> Adaptive reps calculated: {reps} (thresh={thresh_hold}s, t_s={t_s:.4f}s)")
+        os.environ["DISKANN_SEARCH_REPEAT_THRESH_HOLD_REPS"] = str(reps)
 
     for _ in range(reps):
         if batch:
@@ -771,7 +800,7 @@ def main() -> int:
             "alpha": float(args.alpha),
             "k": int(args.k),
             "l_search": int(args.l_search),
-            "reps": int(args.reps),
+            "reps": int(os.environ.get("DISKANN_SEARCH_REPEAT_THRESH_HOLD_REPS", args.reps)),
             "batch": bool(args.batch),
             "n_queries": int(X_test.shape[0]),
             "recall_at_k": float(recall),
@@ -816,7 +845,7 @@ def main() -> int:
             str(distance),
             str(int(args.k)),
             str(int(args.l_search)),
-            str(int(args.reps)),
+            str(int(os.environ.get("DISKANN_SEARCH_REPEAT_THRESH_HOLD_REPS", args.reps))),
             f"{recall:.4f}",
             f"{qps:.1f}",
             f"{search_obj['lat_mean_us']:.1f}",
@@ -831,7 +860,7 @@ def main() -> int:
             f"- distance: {distance}",
             f"- k: {int(args.k)}",
             f"- l_search: {int(args.l_search)}",
-            f"- reps: {int(args.reps)}",
+            f"- reps: {int(os.environ.get('DISKANN_SEARCH_REPEAT_THRESH_HOLD_REPS', args.reps))}",
             f"- batch: {bool(args.batch)}",
             f"- recall@k: {recall:.6f}",
             f"- peak_rss_gib (query only): {(peak_rss_gib if peak_rss_gib is not None else 'n/a')}",

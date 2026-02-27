@@ -113,6 +113,83 @@ def _read_csv(path: Path) -> tuple[list[str], list[list[str]]]:
     return (headers, rows)
 
 
+_RE_REPEAT_SUFFIX = re.compile(r"^(?P<base>.+)__rep(\d{3}|_combined)$")
+_REPEAT_AVG_FIELDS = {
+    "peak_rss_gib",
+    "peak_tps",
+    "peak_kB_read_s",
+    "peak_kB_wrtn_s",
+    "recall_at_k",
+    "qps_mean",
+    "lat_mean_us",
+    "lat_p50_us",
+    "lat_p95_us",
+    "lat_p99_us",
+    "load_index_s",
+}
+
+
+def _base_case_name(case_name: str) -> str:
+    m = _RE_REPEAT_SUFFIX.match((case_name or "").strip())
+    if m:
+        return m.group("base")
+    return case_name
+
+
+def _aggregate_repeat_rows(headers: list[str], rows: list[list[str]]) -> tuple[list[str], list[list[str]]]:
+    if not headers or not rows:
+        return (headers, rows)
+    if "case" not in headers:
+        return (headers, rows)
+
+    idx = {h: i for i, h in enumerate(headers)}
+    case_idx = idx["case"]
+
+    grouped: dict[str, list[list[str]]] = {}
+    order: list[str] = []
+    for r in rows:
+        if len(r) < len(headers):
+            r = r + [""] * (len(headers) - len(r))
+        case_name = r[case_idx] if case_idx < len(r) else ""
+        base = _base_case_name(case_name)
+        if base not in grouped:
+            grouped[base] = []
+            order.append(base)
+        grouped[base].append(r)
+
+    out_rows: list[list[str]] = []
+    for base in order:
+        group = grouped[base]
+        out = [""] * len(headers)
+
+        for i, h in enumerate(headers):
+            if h == "case":
+                out[i] = base
+                continue
+
+            values = [row[i] if i < len(row) else "" for row in group]
+            if h in _REPEAT_AVG_FIELDS:
+                nums = [_to_float(v) for v in values]
+                nums = [v for v in nums if v is not None]
+                if nums:
+                    out[i] = _fmt_float(sum(nums) / float(len(nums)), 2)
+                else:
+                    out[i] = ""
+                continue
+
+            # Keep first non-empty value for non-performance fields.
+            chosen = ""
+            for v in values:
+                if (v or "").strip() != "":
+                    chosen = v
+                    break
+            out[i] = chosen
+
+        out_rows.append(out)
+
+    return (headers, out_rows)
+
+
 def _to_float(v: str | None) -> float | None:
     if v is None:
         return None
@@ -155,8 +232,10 @@ def _fmt_float(v: float | None, digits: int = 2) -> str:
     return f"{v:.{digits}f}"
 
 
-def _read_csv_dict_rows(path: Path) -> list[dict[str, str]]:
+def _read_csv_dict_rows(path: Path, *, aggregate_repeats: bool = False) -> list[dict[str, str]]:
     headers, rows = _read_csv(path)
+    if aggregate_repeats:
+        headers, rows = _aggregate_repeat_rows(headers, rows)
     if not headers or not rows:
         return []
     out: list[dict[str, str]] = []
@@ -168,8 +247,8 @@ def _read_csv_dict_rows(path: Path) -> list[dict[str, str]]:
 
 
 def _compare_csv_by_keys(path_a: Path, path_b: Path, key_fields: list[str]) -> dict[str, Any]:
-    rows_a = _read_csv_dict_rows(path_a)
-    rows_b = _read_csv_dict_rows(path_b)
+    rows_a = _read_csv_dict_rows(path_a, aggregate_repeats=True)
+    rows_b = _read_csv_dict_rows(path_b, aggregate_repeats=True)
     if not rows_a or not rows_b:
         return {
             "available": False,
@@ -456,6 +535,9 @@ def create_app(settings: Settings) -> FastAPI:
         mode_txt = _read_text_if_exists(run_dir / "mode.txt", max_bytes=2000)
         run_mode = (mode_txt or "").strip() or None
 
+        name_txt = _read_text_if_exists(run_dir / "name.txt", max_bytes=2000)
+        run_name = (name_txt or "").strip() or None
+
         batch_txt = _read_text_if_exists(run_dir / "batch.txt", max_bytes=50)
         batch_norm = (batch_txt or "").strip().lower()
         is_batch = batch_norm in {"1", "true", "yes", "y", "batch"}
@@ -476,6 +558,7 @@ def create_app(settings: Settings) -> FastAPI:
         return {
             "id": run_id,
             "mode": run_mode,
+            "name": run_name,
             "query_mode": query_mode,
             "cpu_bind": cpu_bind,
             "cpu_model": cpu_model,
@@ -557,6 +640,9 @@ def create_app(settings: Settings) -> FastAPI:
             mode_txt = _read_text_if_exists(run_dir / "mode.txt", max_bytes=2000)
             run_mode = (mode_txt or "").strip() or None
 
+            name_txt = _read_text_if_exists(run_dir / "name.txt", max_bytes=2000)
+            run_name = (name_txt or "").strip() or None
+
             lscpu_raw = _read_text_if_exists(run_dir / "lscpu.txt", max_bytes=200_000)
             if not lscpu_raw:
                 if lscpu_cache.get("raw") is None:
@@ -576,7 +662,7 @@ def create_app(settings: Settings) -> FastAPI:
             is_batch = batch_norm in {"1", "true", "yes", "y", "batch"}
             query_mode = "batch" if is_batch else "single"
 
-            if mode_norm and (run_mode or "").strip().lower() != mode_norm:
+            if mode_norm and mode_norm not in (run_mode or "").strip().lower() and mode_norm not in (run_name or "").strip().lower():
                 continue
             if cpu_filter_norm and cpu_filter_norm not in (cpu_model or "").lower():
                 continue
@@ -589,7 +675,7 @@ def create_app(settings: Settings) -> FastAPI:
                     continue
 
             if q:
-                hay = " ".join([run_id, run_mode or ""]).lower()
+                hay = " ".join([run_id, run_mode or "", run_name or ""]).lower()
                 if q not in hay:
                     continue
 
@@ -597,6 +683,7 @@ def create_app(settings: Settings) -> FastAPI:
                 {
                     "id": run_id,
                     "mode": run_mode,
+                    "name": run_name,
                     "query_mode": query_mode,
                     "cpu_model": cpu_model,
                     "memory": memory,
@@ -679,6 +766,9 @@ def create_app(settings: Settings) -> FastAPI:
         mode_txt = _read_text_if_exists(run_dir / "mode.txt", max_bytes=2000)
         run_mode = (mode_txt or "").strip() or None
 
+        name_txt = _read_text_if_exists(run_dir / "name.txt", max_bytes=2000)
+        run_name = (name_txt or "").strip() or None
+
         batch_txt = _read_text_if_exists(run_dir / "batch.txt", max_bytes=50)
         batch_norm = (batch_txt or "").strip().lower()
         is_batch = batch_norm in {"1", "true", "yes", "y", "batch"}
@@ -691,6 +781,9 @@ def create_app(settings: Settings) -> FastAPI:
         pq_headers, pq_rows = _read_csv(run_dir / "outputs" / "summary.pq.csv")
         spherical_headers, spherical_rows = _read_csv(run_dir / "outputs" / "summary.spherical.csv")
         headers, rows = _read_tsv(run_dir / "outputs" / "summary.tsv")
+
+        pq_headers, pq_rows = _aggregate_repeat_rows(pq_headers, pq_rows)
+        spherical_headers, spherical_rows = _aggregate_repeat_rows(spherical_headers, spherical_rows)
 
         perf_right = [
             "peak_rss_gib",
@@ -807,6 +900,7 @@ def create_app(settings: Settings) -> FastAPI:
                 "dataset": dataset,
                 "run_id": run_id,
                 "mode": run_mode,
+                "name": run_name,
                 "query_mode": query_mode,
                 "cpu_bind": cpu_bind,
                 "cpu_cores": cpu_cores,
