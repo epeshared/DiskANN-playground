@@ -309,6 +309,29 @@ PY
 
 eval "$(load_job_conf_as_bash "$JOB_CONF")"
 
+expand_tilde_path() {
+  # Bash does not expand '~' inside variables. Allow configs to use ~/...
+  local p="${1:-}"
+  if [[ -z "$p" ]]; then
+    printf '%s' ""
+    return 0
+  fi
+  if [[ "$p" == "~" ]]; then
+    printf '%s' "$HOME"
+    return 0
+  fi
+  if [[ "$p" == "~/"* ]]; then
+    # Escape '~' so bash doesn't tilde-expand the pattern inside ${...#word}.
+    printf '%s' "$HOME/${p#\~/}"
+    return 0
+  fi
+  printf '%s' "$p"
+}
+
+HDF5="$(expand_tilde_path "${HDF5:-}")"
+RUNS_DIR="$(expand_tilde_path "${RUNS_DIR:-}")"
+INDEX_DIR="$(expand_tilde_path "${INDEX_DIR:-}")"
+
 export DISKANN_RS_NATIVE_PROFILE
 export DISKANN_RS_FIT_BATCH_SIZE
 
@@ -597,16 +620,20 @@ if [[ -n "$RUN_ID_OVERRIDE" && -n "$INDEX_DIR" ]]; then
   exit 2
 fi
 
-# index_dir-as-runid is compatible with setting a new output run_id.
-# But it is NOT compatible with resume_runid (which implies reusing an existing run folder)
-# and we disallow using the same id for both output and index source to avoid accidental overwrites.
-if [[ -n "$RESUME_RUN_ID" && -n "$INDEX_RUN_ID" ]]; then
-  echo "ERROR: --resume-runid cannot be combined with index_dir-as-runid" >&2
-  exit 2
-fi
+# index_dir-as-runid is compatible with both:
+# - setting a new output run_id (write outputs into a new run folder)
+# - resume_runid (resume/search in an existing run folder)
+#
+# But we disallow using the same id for both output and index source to avoid accidental overwrites
+# (writing outputs into the index source run folder).
 if [[ -n "$RUN_ID_OVERRIDE" && -n "$INDEX_RUN_ID" && "$RUN_ID_OVERRIDE" == "$INDEX_RUN_ID" ]]; then
   echo "ERROR: run_id must differ from index_dir-as-runid (would write outputs into the index source run folder)" >&2
   echo "- Either set run_id to a new value, or clear index_dir and use resume_runid=${RUN_ID_OVERRIDE}" >&2
+  exit 2
+fi
+if [[ -n "$RESUME_RUN_ID" && -n "$INDEX_RUN_ID" && "$RESUME_RUN_ID" == "$INDEX_RUN_ID" ]]; then
+  echo "ERROR: resume_runid must differ from index_dir-as-runid (would write outputs into the index source run folder)" >&2
+  echo "- Either set resume_runid to a new value, or clear index_dir and resume the build run directly." >&2
   exit 2
 fi
 
@@ -656,6 +683,22 @@ NATIVE_DIR="$WORKSPACE_ROOT/ann-benchmark-epeshared/ann_benchmarks/algorithms/di
 if [[ ! -d "$NATIVE_DIR" ]]; then
   echo "ERROR: native crate not found: $NATIVE_DIR" >&2
   exit 1
+fi
+
+# The native crate is configured to use vendored crates (native/vendor).
+# If vendor/ is missing (common on a fresh checkout), cargo build will fail.
+# Bootstrap vendor/ once by temporarily disabling the replacement config.
+if [[ -f "$NATIVE_DIR/.cargo/config.toml" ]] && grep -q "vendored-sources" "$NATIVE_DIR/.cargo/config.toml"; then
+  if [[ ! -d "$NATIVE_DIR/vendor" ]]; then
+    echo "==> vendor/ missing; generating Rust vendored deps via 'cargo vendor'" >&2
+    cfg="$NATIVE_DIR/.cargo/config.toml"
+    bak="$NATIVE_DIR/.cargo/config.toml.bak"
+    trap '[[ -f "$bak" ]] && mv -f "$bak" "$cfg"' RETURN
+    mv -f "$cfg" "$bak"
+    ( cd "$NATIVE_DIR" && cargo vendor vendor >/dev/null )
+    mv -f "$bak" "$cfg"
+    trap - RETURN
+  fi
 fi
 
 echo "==> cargo build (native extension; profile=$DISKANN_RS_NATIVE_PROFILE)"
@@ -804,6 +847,7 @@ COMMON_FIELDS = [
 PQ_FIELDS = [
   *COMMON_FIELDS,
   "num_pq_chunks",
+  "disk_index",
   "translate_to_center",
   "num_centers",
   "max_k_means_reps",
@@ -995,6 +1039,7 @@ if cases_dir.is_dir():
               row.update(
                 {
                   "num_pq_chunks": _as_str(chunks),
+                  "disk_index": _as_str(_get(search_obj, build_obj, "disk_index")),
                   "translate_to_center": _as_str(translate),
                   "num_centers": _as_str(_get(search_obj, build_obj, "num_centers")),
                   "max_k_means_reps": _as_str(_get(search_obj, build_obj, "max_k_means_reps")),
@@ -1339,6 +1384,25 @@ if [[ -n "$INDEX_RUN_ID" ]]; then
       exit 2
     fi
     mapfile -t _groups < <(get_run_groups_by_name "$NAME" "$METRIC" "$CONFIG_YML")
+
+    # Apply optional run_group prefix filters in single-algo mode.
+    if [[ "$ALGO" == "pq" && -n "$RUN_GROUP_PREFIX_PQ" ]]; then
+      mapfile -t _groups < <(filter_run_groups_by_prefix "$RUN_GROUP_PREFIX_PQ" "${_groups[@]}")
+    elif [[ "$ALGO" == "spherical" && -n "$RUN_GROUP_PREFIX_SPHERICAL" ]]; then
+      mapfile -t _groups < <(filter_run_groups_by_prefix "$RUN_GROUP_PREFIX_SPHERICAL" "${_groups[@]}")
+    fi
+
+    if [[ ${#_groups[@]} -eq 0 ]]; then
+      if [[ "$ALGO" == "pq" ]]; then
+        echo "ERROR: no run_groups matched (name=$NAME prefix=$RUN_GROUP_PREFIX_PQ metric=$METRIC)" >&2
+      elif [[ "$ALGO" == "spherical" ]]; then
+        echo "ERROR: no run_groups matched (name=$NAME prefix=$RUN_GROUP_PREFIX_SPHERICAL metric=$METRIC)" >&2
+      else
+        echo "ERROR: no run_groups found (name=$NAME metric=$METRIC)" >&2
+      fi
+      exit 2
+    fi
+
     missing=0
     for rg in "${_groups[@]}"; do
       cid="$(sanitize_case_id "$ALGO-$rg")"
@@ -1396,6 +1460,24 @@ run_one() {
   local extra_args=()
   if [[ -n "$run_group_for_algo" ]]; then
     invocation_args+=(--run-group "$run_group_for_algo")
+
+    # Disambiguate config.yml entries when multiple presets share the same run_group key
+    # (e.g., diskann-rs-pq-memory and diskann-rs-pq-disk both define pq_... groups).
+    local preset_name=""
+    if [[ "$COMPARE" -eq 1 ]]; then
+      if [[ "$algo" == "pq" ]]; then
+        preset_name="${NAME_PQ:-}"
+      elif [[ "$algo" == "spherical" ]]; then
+        preset_name="${NAME_SPHERICAL:-}"
+      else
+        preset_name="${NAME:-}"
+      fi
+    else
+      preset_name="${NAME:-}"
+    fi
+    if [[ -n "$preset_name" ]]; then
+      invocation_args+=(--preset-name "$preset_name")
+    fi
   else
     invocation_args+=(--l-build "$L_BUILD" --max-outdegree "$MAX_OUTDEGREE" --alpha "$ALPHA" --l-search "$L_SEARCH")
     extra_args+=(--algo "$algo")
@@ -1647,6 +1729,25 @@ if [[ "$COMPARE" -eq 1 ]]; then
 else
   if [[ "$RUN_ALL" -eq 1 ]]; then
     mapfile -t groups < <(get_run_groups_by_name "$NAME" "$METRIC" "$CONFIG_YML")
+
+    # Apply optional run_group prefix filters in single-algo mode.
+    if [[ "$ALGO" == "pq" && -n "$RUN_GROUP_PREFIX_PQ" ]]; then
+      mapfile -t groups < <(filter_run_groups_by_prefix "$RUN_GROUP_PREFIX_PQ" "${groups[@]}")
+    elif [[ "$ALGO" == "spherical" && -n "$RUN_GROUP_PREFIX_SPHERICAL" ]]; then
+      mapfile -t groups < <(filter_run_groups_by_prefix "$RUN_GROUP_PREFIX_SPHERICAL" "${groups[@]}")
+    fi
+
+    if [[ ${#groups[@]} -eq 0 ]]; then
+      if [[ "$ALGO" == "pq" ]]; then
+        echo "ERROR: no run_groups matched (name=$NAME prefix=$RUN_GROUP_PREFIX_PQ metric=$METRIC)" >&2
+      elif [[ "$ALGO" == "spherical" ]]; then
+        echo "ERROR: no run_groups matched (name=$NAME prefix=$RUN_GROUP_PREFIX_SPHERICAL metric=$METRIC)" >&2
+      else
+        echo "ERROR: no run_groups found (name=$NAME metric=$METRIC)" >&2
+      fi
+      exit 2
+    fi
+
     for rg in "${groups[@]}"; do
       run_case "$ALGO" "$ALGO-$rg" "$rg"
     done

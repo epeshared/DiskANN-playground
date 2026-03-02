@@ -389,6 +389,7 @@ def _load_run_group_preset(
     config_yml: Path,
     distance: str,
     run_group: str,
+    preset_name: str | None = None,
 ) -> dict[str, Any]:
     """Load params from ann-benchmarks algorithm config.yml.
 
@@ -411,6 +412,8 @@ def _load_run_group_preset(
 
     for entry in dist_cfg:
         if not isinstance(entry, dict):
+            continue
+        if preset_name is not None and str(entry.get("name", "")) != str(preset_name):
             continue
         run_groups = entry.get("run_groups")
         if not isinstance(run_groups, dict):
@@ -447,8 +450,12 @@ def _load_run_group_preset(
 
         return {"algo": algo, "params": dict(args_list[0]), "l_search": l_search}
 
+    if preset_name is None:
+        raise ValueError(
+            f"run_group {run_group!r} not found for float/{distance} in {config_yml}"
+        )
     raise ValueError(
-        f"run_group {run_group!r} not found for float/{distance} in {config_yml}"
+        f"run_group {run_group!r} not found for float/{distance} name={preset_name!r} in {config_yml}"
     )
 
 
@@ -539,6 +546,11 @@ def main() -> int:
         default=None,
         help="Run-group name from diskann_rs/config.yml; fills l_build/max_outdegree/alpha/(pq|spherical) params",
     )
+    ap.add_argument(
+        "--preset-name",
+        default=None,
+        help="Preset algo name from diskann_rs/config.yml (the entry's name: ...). Used with --run-group to disambiguate duplicate run_group keys across presets.",
+    )
 
     ap.add_argument("--l-build", type=int, default=None)
     ap.add_argument("--max-outdegree", type=int, default=None)
@@ -555,6 +567,46 @@ def main() -> int:
     )
     ap.add_argument("--no-translate-to-center", action="store_false", dest="translate_to_center")
     ap.add_argument("--pq-seed", type=int, default=0)
+
+    # Disk PQ index/search (DiskANNRS_PQ with PQDiskIndex).
+    # Default is unset so --run-group presets can fill these in.
+    ap.add_argument(
+        "--disk-index",
+        action="store_true",
+        default=None,
+        help="PQ only. Use on-disk PQ index (PQDiskIndex) instead of in-memory PQIndex.",
+    )
+    ap.add_argument("--no-disk-index", action="store_false", dest="disk_index")
+    ap.add_argument(
+        "--disk-build-memory-gb",
+        type=float,
+        default=None,
+        help="PQ disk only. Disk index build memory budget (GB).",
+    )
+    ap.add_argument(
+        "--disk-search-pq-chunks",
+        type=int,
+        default=None,
+        help="PQ disk only. PQ chunks used by disk search (often equals num_pq_chunks).",
+    )
+    ap.add_argument(
+        "--disk-search-io-limit",
+        type=int,
+        default=None,
+        help="PQ disk only. Disk search IO limit.",
+    )
+    ap.add_argument(
+        "--disk-build-quantization",
+        type=str,
+        default=None,
+        help="PQ disk only. Quantization spec for disk build (e.g. PQ_96).",
+    )
+    ap.add_argument(
+        "--disk-block-size",
+        type=int,
+        default=None,
+        help="PQ disk only. Disk index block size.",
+    )
 
     ap.add_argument("--spherical-nbits", type=int, default=2, choices=[1, 2, 4])
     ap.add_argument("--spherical-seed", type=int, default=0)
@@ -615,7 +667,12 @@ def main() -> int:
             if args.config_yml
             else _default_diskann_config_yml()
         )
-        preset = _load_run_group_preset(config_yml=config_yml, distance=distance, run_group=str(args.run_group))
+        preset = _load_run_group_preset(
+            config_yml=config_yml,
+            distance=distance,
+            run_group=str(args.run_group),
+            preset_name=(str(args.preset_name) if args.preset_name else None),
+        )
 
         preset_algo = str(preset["algo"])
         if args.algo and args.algo != preset_algo:
@@ -646,6 +703,47 @@ def main() -> int:
                     args.translate_to_center = False
             else:
                 args.translate_to_center = bool(v)
+
+        # Disk PQ-specific preset params.
+        if args.algo == "pq" and args.disk_index is None and "disk_index" in p:
+            v = p["disk_index"]
+            if isinstance(v, bool):
+                args.disk_index = v
+            elif isinstance(v, str):
+                vv = v.strip().lower()
+                if vv in {"1", "true", "t", "yes", "y"}:
+                    args.disk_index = True
+                elif vv in {"0", "false", "f", "no", "n"}:
+                    args.disk_index = False
+            else:
+                args.disk_index = bool(v)
+
+        if args.algo == "pq" and args.disk_build_memory_gb is None and "disk_build_memory_gb" in p:
+            try:
+                args.disk_build_memory_gb = float(p["disk_build_memory_gb"])
+            except Exception:
+                pass
+        if args.algo == "pq" and args.disk_search_pq_chunks is None and "disk_search_pq_chunks" in p:
+            try:
+                args.disk_search_pq_chunks = int(p["disk_search_pq_chunks"])
+            except Exception:
+                pass
+        if args.algo == "pq" and args.disk_search_io_limit is None and "disk_search_io_limit" in p:
+            try:
+                args.disk_search_io_limit = int(p["disk_search_io_limit"])
+            except Exception:
+                pass
+        if args.algo == "pq" and args.disk_build_quantization is None and "disk_build_quantization" in p:
+            try:
+                vv = p["disk_build_quantization"]
+                args.disk_build_quantization = (str(vv).strip() if vv is not None else None)
+            except Exception:
+                pass
+        if args.algo == "pq" and args.disk_block_size is None and "disk_block_size" in p:
+            try:
+                args.disk_block_size = int(p["disk_block_size"])
+            except Exception:
+                pass
         if args.algo == "spherical" and "nbits" in p:
             args.spherical_nbits = int(p["nbits"])
 
@@ -677,6 +775,8 @@ def main() -> int:
     if args.algo == "pq" and args.num_pq_chunks is None:
         raise ValueError("--num-pq-chunks is required when --algo pq (or supply it via --run-group)")
 
+    disk_index_enabled = bool(args.disk_index) if args.disk_index is not None else False
+
     outputs = _outputs(work_dir)
 
     translate_to_center: bool | None = args.translate_to_center
@@ -702,8 +802,21 @@ def main() -> int:
                     "max_k_means_reps": int(args.max_k_means_reps),
                     "translate_to_center": bool(translate_to_center),
                     "rng_seed": int(args.pq_seed),
+                    "disk_index": bool(disk_index_enabled),
                 }
             )
+
+            if disk_index_enabled:
+                if args.disk_build_memory_gb is not None:
+                    param["disk_build_memory_gb"] = float(args.disk_build_memory_gb)
+                if args.disk_search_pq_chunks is not None:
+                    param["disk_search_pq_chunks"] = int(args.disk_search_pq_chunks)
+                if args.disk_search_io_limit is not None:
+                    param["disk_search_io_limit"] = int(args.disk_search_io_limit)
+                if args.disk_build_quantization is not None:
+                    param["disk_build_quantization"] = str(args.disk_build_quantization)
+                if args.disk_block_size is not None:
+                    param["disk_block_size"] = int(args.disk_block_size)
         if args.algo == "spherical":
             param.update({"nbits": int(args.spherical_nbits), "rng_seed": int(args.spherical_seed)})
 
@@ -735,8 +848,27 @@ def main() -> int:
                     "max_k_means_reps": int(args.max_k_means_reps),
                     "translate_to_center": bool(translate_to_center),
                     "pq_seed": int(args.pq_seed),
+                    "disk_index": bool(disk_index_enabled),
                 }
             )
+            if disk_index_enabled:
+                build_obj.update(
+                    {
+                        "disk_build_memory_gb": (
+                            float(args.disk_build_memory_gb) if args.disk_build_memory_gb is not None else None
+                        ),
+                        "disk_search_pq_chunks": (
+                            int(args.disk_search_pq_chunks) if args.disk_search_pq_chunks is not None else None
+                        ),
+                        "disk_search_io_limit": (
+                            int(args.disk_search_io_limit) if args.disk_search_io_limit is not None else None
+                        ),
+                        "disk_build_quantization": (
+                            str(args.disk_build_quantization) if args.disk_build_quantization is not None else None
+                        ),
+                        "disk_block_size": (int(args.disk_block_size) if args.disk_block_size is not None else None),
+                    }
+                )
         if args.algo == "spherical":
             build_obj.update({"nbits": int(args.spherical_nbits), "spherical_seed": int(args.spherical_seed)})
         _write_json(outputs.build_json, build_obj)
@@ -758,8 +890,20 @@ def main() -> int:
                     "max_k_means_reps": int(args.max_k_means_reps),
                     "translate_to_center": bool(translate_to_center),
                     "rng_seed": int(args.pq_seed),
+                    "disk_index": bool(disk_index_enabled),
                 }
             )
+            if disk_index_enabled:
+                if args.disk_build_memory_gb is not None:
+                    param["disk_build_memory_gb"] = float(args.disk_build_memory_gb)
+                if args.disk_search_pq_chunks is not None:
+                    param["disk_search_pq_chunks"] = int(args.disk_search_pq_chunks)
+                if args.disk_search_io_limit is not None:
+                    param["disk_search_io_limit"] = int(args.disk_search_io_limit)
+                if args.disk_build_quantization is not None:
+                    param["disk_build_quantization"] = str(args.disk_build_quantization)
+                if args.disk_block_size is not None:
+                    param["disk_block_size"] = int(args.disk_block_size)
         if args.algo == "spherical":
             param.update({"nbits": int(args.spherical_nbits), "rng_seed": int(args.spherical_seed)})
 
@@ -832,8 +976,27 @@ def main() -> int:
                     "max_k_means_reps": int(args.max_k_means_reps),
                     "translate_to_center": bool(translate_to_center),
                     "pq_seed": int(args.pq_seed),
+                    "disk_index": bool(disk_index_enabled),
                 }
             )
+            if disk_index_enabled:
+                search_obj.update(
+                    {
+                        "disk_build_memory_gb": (
+                            float(args.disk_build_memory_gb) if args.disk_build_memory_gb is not None else None
+                        ),
+                        "disk_search_pq_chunks": (
+                            int(args.disk_search_pq_chunks) if args.disk_search_pq_chunks is not None else None
+                        ),
+                        "disk_search_io_limit": (
+                            int(args.disk_search_io_limit) if args.disk_search_io_limit is not None else None
+                        ),
+                        "disk_build_quantization": (
+                            str(args.disk_build_quantization) if args.disk_build_quantization is not None else None
+                        ),
+                        "disk_block_size": (int(args.disk_block_size) if args.disk_block_size is not None else None),
+                    }
+                )
         if args.algo == "spherical":
             search_obj.update({"nbits": int(args.spherical_nbits), "spherical_seed": int(args.spherical_seed)})
         _write_json(outputs.search_json, search_obj)
@@ -862,6 +1025,7 @@ def main() -> int:
             f"- l_search: {int(args.l_search)}",
             f"- reps: {int(os.environ.get('DISKANN_SEARCH_REPEAT_THRESH_HOLD_REPS', args.reps))}",
             f"- batch: {bool(args.batch)}",
+            f"- disk_index: {bool(disk_index_enabled)}",
             f"- recall@k: {recall:.6f}",
             f"- peak_rss_gib (query only): {(peak_rss_gib if peak_rss_gib is not None else 'n/a')}",
             f"- peak_tps (query only): {(search_obj['peak_tps'] if search_obj.get('peak_tps') is not None else 'n/a')}",
@@ -876,6 +1040,17 @@ def main() -> int:
             f"- load_hdf5_s: {t_load1 - t_load0:.3f}",
             f"- load_index_s: {t_load_index1 - t_load_index0:.3f}",
         ]
+        if args.algo == "pq" and disk_index_enabled:
+            details += [
+                "",
+                "## Disk PQ",
+                "",
+                f"- disk_build_memory_gb: {(args.disk_build_memory_gb if args.disk_build_memory_gb is not None else 'n/a')}",
+                f"- disk_search_pq_chunks: {(args.disk_search_pq_chunks if args.disk_search_pq_chunks is not None else 'n/a')}",
+                f"- disk_search_io_limit: {(args.disk_search_io_limit if args.disk_search_io_limit is not None else 'n/a')}",
+                f"- disk_build_quantization: {(args.disk_build_quantization if args.disk_build_quantization is not None else 'n/a')}",
+                f"- disk_block_size: {(args.disk_block_size if args.disk_block_size is not None else 'n/a')}",
+            ]
         _write_text(outputs.details_md, "\n".join(details) + "\n")
 
     return 0

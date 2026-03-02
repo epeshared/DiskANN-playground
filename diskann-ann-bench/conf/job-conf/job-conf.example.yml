@@ -35,6 +35,7 @@ index_dir: ""
 
 # Index cleanup behavior after successful stage=all.
 # Allowed: auto (delete only for auto-generated run_id), yes (always delete created indexes), no (keep indexes).
+# IMPORTANT: quote "yes"/"no" to avoid YAML parsing them as booleans.
 # Never deletes content under an external index_dir.
 delete_index_after_run: auto
 
@@ -163,3 +164,10 @@ remote_setup: false
 
 # (run_remote.sh only) If true, print planned remote actions/commands but do not execute.
 remote_dry_run: false
+
+# (run_remote.sh only) What to fetch back from remote result/.
+# Allowed:
+# - all:     fetch everything (includes large index artifacts)
+# - results: fetch only test outputs; exclude bulky index/data artifacts (recommended)
+# - none:    skip fetching
+remote_fetch: results

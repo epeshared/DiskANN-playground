@@ -7,7 +7,7 @@
 #
 # How to use with run_remote.sh:
 #   1) Copy this file to conf/job-conf.yml (run_remote.sh auto-picks conf/job-conf.(yml|yaml|json|toml))
-#      cp conf/job-conf.remote-build-pq-memory.example.yml conf/job-conf.yml
+#      cp conf/job-conf/job-conf.remote-build-pq-memory.yml conf/job-conf.yml
 #   2) Edit hdf5 + remote_hdf5_dir as needed
 #   3) ./run_remote.sh
 
@@ -22,12 +22,13 @@ stage: build
 
 # Make the run_id stable so remote runs are easy to find/reuse.
 # You can change this per experiment.
-run_id: remote_build_diskann_rs_pq_memory
+run_id: "20260227-1705-build_pq_memory-gnr-ap06"
 resume_runid: ""
 index_dir: ""
 
 # No cleanup by default (since this is build-only and you likely want to inspect artifacts).
-delete_index_after_run: no
+# IMPORTANT: quote "no"/"yes" to avoid YAML parsing them as booleans.
+delete_index_after_run: "no"
 
 # Run all run_groups under the selected preset algo `name`.
 # (This will build multiple parameterizations defined under diskann-rs-pq-memory.)
@@ -61,6 +62,12 @@ cpu_bind: 0-16
 config_yml: ""
 
 # Remote-only fields used by run_remote.sh
+# Control what to sync back from remote to local at the end.
+# - all:     sync everything under result/<dataset>/ (includes large index/*.bin)
+# - results: sync only small result artifacts (skip cases/**/index/**, cases/**/data/**, *.bin)
+# - none:    do not sync anything back
+remote_fetch: results
+
 # Destination directory on remote to store the synced HDF5.
 remote_hdf5_dir: "/nvme5/xtang/ann-data"
 

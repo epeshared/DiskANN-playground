@@ -1,4 +1,4 @@
-# Remote build-only job config: build DiskANN-RS PQ (disk) presets
+# Remote search job config: search DiskANN-RS PQ (disk) presets
 #
 # Target preset in:
 #   ann-benchmark-epeshared/ann_benchmarks/algorithms/diskann_rs/config.yml
@@ -7,7 +7,7 @@
 #
 # How to use with run_remote.sh:
 #   1) Copy this file to conf/job-conf.yml (run_remote.sh auto-picks conf/job-conf.(yml|yaml|json|toml))
-#      cp conf/job-conf/job-conf.remote-build-pq-memory.yml conf/job-conf.yml
+#      cp conf/job-conf/job-conf.remote-search-pq-disk.yml conf/job-conf.yml
 #   2) Edit hdf5 + remote_hdf5_dir as needed
 #   3) ./run_remote.sh
 
@@ -17,21 +17,30 @@ hdf5: /mnt/nvme2n1p1/xtang/ann-data/dbpedia-openai-1000k-angular.hdf5
 # Optional distance/metric override. Empty => auto-detect from HDF5 attrs['distance'].
 metric: ""
 
-# Only build index artifacts (no search).
-stage: build
+# Search only (expects indexes already built).
+#
+# Recommended pattern (keeps build and search outputs separate):
+# - Set `run_id` to a NEW id for this search run.
+# - Set `index_dir` to the BUILD run_id to reuse indexes (see run_local.sh "index_dir-as-runid" mode).
+#
+# Note on strict validation:
+# - If `run_all: true` and `index_dir` points at a build run_id, the harness pre-validates that
+#   EVERY expected case index exists under that build folder.
+# - If you only built a subset of run_groups/cases, set `run_group_prefix_pq` here to match.
+stage: search
 
 # Make the run_id stable so remote runs are easy to find/reuse.
 # You can change this per experiment.
-run_id: "sa9e-pq-disk-index-20260228-1016"
+run_id: "20260227-1705-search_pq_disk-gnr-ap06"
 resume_runid: ""
-index_dir: ""
+index_dir: "20260227-1705-build_pq_disk-gnr-ap06"
 
-# No cleanup by default (since this is build-only and you likely want to inspect artifacts).
+# No cleanup by default; keep artifacts for inspection.
 # IMPORTANT: quote "no"/"yes" to avoid YAML parsing them as booleans.
 delete_index_after_run: "no"
 
 # Run all run_groups under the selected preset algo `name`.
-# (This will build multiple parameterizations defined under diskann-rs-pq-disk.)
+# (This will search multiple parameterizations defined under diskann-rs-pq-disk.)
 run_all: true
 
 # Single-algo mode: only run one preset algo.
@@ -51,28 +60,32 @@ name_spherical: ""
 run_group_prefix_pq: ""
 run_group_prefix_spherical: ""
 
-# Framework defaults (-k etc) are fine for build-only runs.
+# Framework defaults (-k etc) are fine for search runs.
 k: 10
 reps: 1
 batch: false
-# cpu_bind: 0-16
+cpu_bind: 0-16
+
+# Repeat controls (stage=search only). Leave empty for a single pass.
+search_repeat: ""
+search_repeat_thresh_hold: ""
 
 # Optional override of ann-benchmark diskann_rs/config.yml.
 # Empty => use repo default (recommended).
 config_yml: ""
 
 # Remote-only fields used by run_remote.sh
+# Control what to sync back from remote to local at the end.
+# - all:     sync everything under result/<dataset>/ (includes large index/*.bin)
+# - results: sync only small result artifacts (skip cases/**/index/**, cases/**/data/**, *.bin)
+# - none:    do not sync anything back
+remote_fetch: results
+
 # Destination directory on remote to store the synced HDF5.
-remote_hdf5_dir: "~/ann-data"
+remote_hdf5_dir: "/nvme5/xtang/ann-data"
 
 # If true, run setup_remote.sh before executing.
 remote_setup: true
 
 # If true, print planned remote commands but do not execute.
 remote_dry_run: false
-
-# What to fetch back from remote result/.
-# - all:     fetch everything (includes large index artifacts)
-# - results: fetch only test outputs; exclude bulky index/data artifacts
-# - none:    skip fetching
-remote_fetch: results

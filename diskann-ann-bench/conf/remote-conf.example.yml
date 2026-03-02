@@ -13,6 +13,12 @@ port: 22
 
 # Remote workspace root directory.
 # This is where the repos will be synced to.
+# IMPORTANT: index builds can write multi-GB artifacts under:
+#   <remote_dir>/DiskANN-playground/diskann-ann-bench/result/
+# If your HOME/root filesystem is small, point this at a larger mounted data disk.
+# Examples:
+#   remote_dir: /nvme5/diskann-workspace
+#   remote_dir: /data/diskann-workspace
 remote_dir: ~/diskann-workspace
 
 # Connection mode.
@@ -22,3 +28,4 @@ remote_dir: ~/diskann-workspace
 # - socks / socks5: always use SOCKS5 proxy (requires proxy-conf entry)
 # - http: always use HTTP CONNECT proxy (requires proxy-conf entry)
 connect: auto
+# connect: socks5

@@ -41,6 +41,21 @@ REMOTE_HDF5_DIR=""
 SETUP=0
 DRY_RUN=0
 
+# Control what to fetch back from remote result/.
+# - all:     fetch everything (default)
+# - results: fetch only test outputs; exclude bulky index/data artifacts
+# - none:    skip fetching
+FETCH_MODE="all"
+
+# Fail early if the remote filesystem is too small.
+# You can override with: DISKANN_REMOTE_MIN_FREE_GB=...
+: "${DISKANN_REMOTE_MIN_FREE_GB:=30}"
+
+# rsync over ssh (especially via ProxyCommand) can be flaky. Retry a few times
+# on transient SSH failures (typically rc=255).
+: "${DISKANN_REMOTE_RSYNC_RETRIES:=3}"
+: "${DISKANN_REMOTE_RSYNC_RETRY_SLEEP_SEC:=3}"
+
 DISKANN_DIR="$WORKSPACE_ROOT/DiskANN-rs"
 ANN_BENCH_DIR="$WORKSPACE_ROOT/ann-benchmark-epeshared"
 PLAYGROUND_DIR="$DEFAULT_PLAYGROUND_DIR"
@@ -103,7 +118,7 @@ REMOTE_CONF="$(pick_conf_file remote-conf)"
 if [[ -n "$JOB_CONF" ]]; then
   # Interpret relative paths as relative to the selected CONF_DIR.
   case "$JOB_CONF" in
-    /*|~/*) : ;;
+    /*|\~/*) : ;;
     *) JOB_CONF="$CONF_DIR/$JOB_CONF" ;;
   esac
   if [[ ! -f "$JOB_CONF" ]]; then
@@ -149,17 +164,18 @@ def load_config(path: Path):
 
 p = Path(sys.argv[1]).expanduser()
 if not p.is_file():
-    raise SystemExit(f"remote conf not found: {p}")
+  raise SystemExit(f"remote conf not found: {p}")
 
 obj = load_config(p)
 if not isinstance(obj, dict):
   raise SystemExit(f"remote conf must be a mapping/object: {p}")
 
 def g(key, default=""):
-    v = obj.get(key, default)
-    if v is None:
-        return ""
-    return str(v)
+  v = obj.get(key, default)
+  if v is None:
+    return ""
+  # Normalize common config footguns: trailing spaces, CRLF, BOM.
+  return str(v).replace("\ufeff", "").strip()
 
 print(g("host"))
 print(g("user"))
@@ -205,7 +221,8 @@ def g(key, default=""):
   v = obj.get(key, default)
   if v is None:
     return ""
-  return str(v)
+  # Normalize common config footguns: trailing spaces, CRLF, BOM.
+  return str(v).replace("\ufeff", "").strip()
 
 def gb(key, default=False) -> str:
   v = obj.get(key, default)
@@ -216,6 +233,7 @@ print(g("remote_hdf5_dir"))
 print(g("stage"))
 print(gb("remote_setup", False))
 print(gb("remote_dry_run", False))
+print(g("remote_fetch", "all"))
 PY
 }
 
@@ -261,6 +279,15 @@ REMOTE_HDF5_DIR="${_jobconf[1]:-}"
 STAGE="${_jobconf[2]:-}"
 SETUP="${_jobconf[3]:-0}"
 DRY_RUN="${_jobconf[4]:-0}"
+FETCH_MODE="${_jobconf[5]:-all}"
+
+case "${FETCH_MODE,,}" in
+  all|results|none) ;;
+  *)
+    echo "ERROR: invalid remote_fetch: $FETCH_MODE (expected: all|results|none)" >&2
+    exit 2
+    ;;
+esac
 
 STAGE="${STAGE,,}"
 
@@ -284,7 +311,7 @@ if [[ -z "$REMOTE_HDF5_DIR" ]]; then
   REMOTE_HDF5_DIR="$REMOTE_DIR/data"
 else
   case "$REMOTE_HDF5_DIR" in
-    /*|~/*) : ;;
+    /*|\~/*) : ;;
     *) REMOTE_HDF5_DIR="$REMOTE_DIR/$REMOTE_HDF5_DIR" ;;
   esac
 fi
@@ -534,10 +561,45 @@ fi
 SSH_OPTS=(
   -p "$PORT"
   -o StrictHostKeyChecking=no
-  -o ConnectTimeout=10
+  -o ConnectTimeout=30
+  -o ConnectionAttempts=3
   -o ServerAliveInterval=15
   -o ServerAliveCountMax=3
+  -o TCPKeepAlive=yes
+  -o ControlMaster=no
+  -o ControlPath=none
 )
+
+rsync_with_retry() {
+  # Usage: rsync_with_retry <rsync args...>
+  # Retries on transient ssh/transport failures (rc=255).
+  local -i attempt=1
+  local -i max_attempts
+  max_attempts="$DISKANN_REMOTE_RSYNC_RETRIES"
+  if (( max_attempts < 1 )); then
+    max_attempts=1
+  fi
+
+  while true; do
+    set +e
+    "$@"
+    local rc=$?
+    set -e
+
+    if [[ $rc -eq 0 ]]; then
+      return 0
+    fi
+    if [[ $rc -ne 255 ]]; then
+      return "$rc"
+    fi
+    if (( attempt >= max_attempts )); then
+      return "$rc"
+    fi
+    echo "WARN: rsync transport failed (rc=255). Retry $attempt/$max_attempts after ${DISKANN_REMOTE_RSYNC_RETRY_SLEEP_SEC}s..." >&2
+    sleep "$DISKANN_REMOTE_RSYNC_RETRY_SLEEP_SEC"
+    attempt=$((attempt + 1))
+  done
+}
 
 if [[ "$use_proxy" -eq 1 ]]; then
   proxy_cmd=""
@@ -706,7 +768,7 @@ run_rsync_dir() {
   fi
   local rsh
   rsh="$(rsync_ssh_rsh)"
-  "${clean_env[@]}" sshpass -p "$PASS" rsync -avz \
+  rsync_with_retry "${clean_env[@]}" sshpass -p "$PASS" rsync -avz \
     --info=progress2 \
     --partial \
     --timeout=60 \
@@ -731,7 +793,7 @@ run_rsync_ann_bench_dir() {
   fi
   local rsh
   rsh="$(rsync_ssh_rsh)"
-  "${clean_env[@]}" sshpass -p "$PASS" rsync -avz \
+  rsync_with_retry "${clean_env[@]}" sshpass -p "$PASS" rsync -avz \
     --info=progress2 \
     --partial \
     --timeout=60 \
@@ -740,6 +802,7 @@ run_rsync_ann_bench_dir() {
     --exclude='results/' \
     --exclude='venv/' \
     --exclude='.idea/' \
+    --exclude='ann_benchmarks/algorithms/diskann_rs/native/target/' \
     --exclude='**/__pycache__/' \
     --exclude='**/*.pyc' \
     -e "$rsh" \
@@ -759,7 +822,7 @@ run_rsync_file() {
   local rsh
   rsh="$(rsync_ssh_rsh)"
   # For large binary files (e.g., .hdf5), compression (-z) often hurts. Use resume-friendly options.
-  "${clean_env[@]}" sshpass -p "$PASS" rsync -av \
+  rsync_with_retry "${clean_env[@]}" sshpass -p "$PASS" rsync -av \
     --info=progress2 \
     --partial \
     --append-verify \
@@ -815,6 +878,41 @@ if [[ "$STAGE" == "native" ]]; then
   run_ssh_stream "mkdir -p $REMOTE_DIR $REMOTE_DIR/DiskANN-playground/diskann-ann-bench/conf"
 else
   run_ssh_stream "mkdir -p $REMOTE_DIR $REMOTE_HDF5_DIR $REMOTE_DIR/DiskANN-playground/diskann-ann-bench/conf"
+fi
+
+echo "==> Remote disk space preflight..." >&2
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  echo "[dry-run] would check remote free space under: $REMOTE_DIR" >&2
+else
+  if [[ "$STAGE" == "native" ]]; then
+    run_ssh_stream_tty "set -e; \
+echo '==> [Remote] Disk usage (workspace, HOME, /tmp)'; \
+df -hT $REMOTE_DIR \$HOME /tmp 2>/dev/null || true; \
+avail=\$(df -PB1 $REMOTE_DIR 2>/dev/null | awk 'NR==2{print \$4}'); \
+if [[ -n \"\${avail:-}\" ]]; then \
+  need=\$(( ${DISKANN_REMOTE_MIN_FREE_GB} * 1024 * 1024 * 1024 )); \
+  echo \"==> [Remote] Free bytes on filesystem containing $REMOTE_DIR: \$avail (need >= \$need)\"; \
+  if (( avail < need )); then \
+    echo \"ERROR: Not enough free space on remote filesystem for $REMOTE_DIR.\" >&2; \
+    echo \"ERROR: Set conf/remote-conf.yml: remote_dir to a larger mounted disk (e.g. /nvme... or /data...) or free space, then retry.\" >&2; \
+    exit 28; \
+  fi; \
+fi"
+  else
+    run_ssh_stream_tty "set -e; \
+echo '==> [Remote] Disk usage (workspace, dataset dir, HOME, /tmp)'; \
+df -hT $REMOTE_DIR $REMOTE_HDF5_DIR \$HOME /tmp 2>/dev/null || true; \
+avail=\$(df -PB1 $REMOTE_DIR 2>/dev/null | awk 'NR==2{print \$4}'); \
+if [[ -n \"\${avail:-}\" ]]; then \
+  need=\$(( ${DISKANN_REMOTE_MIN_FREE_GB} * 1024 * 1024 * 1024 )); \
+  echo \"==> [Remote] Free bytes on filesystem containing $REMOTE_DIR: \$avail (need >= \$need)\"; \
+  if (( avail < need )); then \
+    echo \"ERROR: Not enough free space on remote filesystem for $REMOTE_DIR.\" >&2; \
+    echo \"ERROR: Set conf/remote-conf.yml: remote_dir to a larger mounted disk (e.g. /nvme... or /data...) or free space, then retry.\" >&2; \
+    exit 28; \
+  fi; \
+fi"
+  fi
 fi
 
 sync_dir() {
@@ -887,18 +985,38 @@ else
 fi
 
 # 5) 将远端结果同步回本地
-echo "==> Fetching results back to local..."
-mkdir -p "$SCRIPT_DIR/result"
-if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[dry-run] rsync results: $USER@$HOST:$REMOTE_DIR/DiskANN-playground/diskann-ann-bench/result/ -> $SCRIPT_DIR/result/" >&2
+if [[ "${FETCH_MODE,,}" == "none" ]]; then
+  echo "==> Skipping fetch back to local (remote_fetch=none)." >&2
 else
-  rsync_rsh="$(rsync_ssh_rsh)"
-  "${clean_env[@]}" sshpass -p "$PASS" rsync -avz \
-    --info=progress2 \
-    --partial \
-    --timeout=60 \
-    -e "$rsync_rsh" \
-    "$USER@$HOST:$REMOTE_DIR/DiskANN-playground/diskann-ann-bench/result/" "$SCRIPT_DIR/result/"
-fi
+  echo "==> Fetching results back to local (remote_fetch=$FETCH_MODE)..."
+  mkdir -p "$SCRIPT_DIR/result"
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[dry-run] rsync results: $USER@$HOST:$REMOTE_DIR/DiskANN-playground/diskann-ann-bench/result/ -> $SCRIPT_DIR/result/" >&2
+  else
+    rsync_rsh="$(rsync_ssh_rsh)"
+    # For large binary index artifacts, compression (-z) often hurts and can't be resumed safely.
+    # Prefer resume-friendly flags here so you can Ctrl-C and retry.
+    if [[ "${FETCH_MODE,,}" == "results" ]]; then
+      rsync_with_retry "${clean_env[@]}" sshpass -p "$PASS" rsync -av \
+        --info=progress2 \
+        --partial \
+        --append-verify \
+        --timeout=60 \
+        --exclude='**/cases/**/index/**' \
+        --exclude='**/cases/**/data/**' \
+        --exclude='**/*.bin' \
+        -e "$rsync_rsh" \
+        "$USER@$HOST:$REMOTE_DIR/DiskANN-playground/diskann-ann-bench/result/" "$SCRIPT_DIR/result/"
+    else
+      rsync_with_retry "${clean_env[@]}" sshpass -p "$PASS" rsync -av \
+        --info=progress2 \
+        --partial \
+        --append-verify \
+        --timeout=60 \
+        -e "$rsync_rsh" \
+        "$USER@$HOST:$REMOTE_DIR/DiskANN-playground/diskann-ann-bench/result/" "$SCRIPT_DIR/result/"
+    fi
+  fi
 
-echo "==> All done! Results are synced to $SCRIPT_DIR/result/"
+  echo "==> All done! Results are synced to $SCRIPT_DIR/result/" 
+fi

@@ -809,6 +809,7 @@ def create_app(settings: Settings) -> FastAPI:
             "max_outdegree",
             "alpha",
             "num_pq_chunks",
+            "disk_index",
             "translate_to_center",
             "num_centers",
             "max_k_means_reps",

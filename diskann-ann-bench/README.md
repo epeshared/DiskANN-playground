@@ -115,6 +115,26 @@ Disk index note (PQ disk):
 
 - A “disk index” still needs an explicit **load/open** step in the search process to initialize the index (metadata + file handles, possibly mmap). It does **not** reuse in-memory build state unless you keep the same process and the same index object alive.
 
+### Verifying PQ “disk index” vs “memory PQ”
+
+The preset name (e.g. `diskann-rs-pq-disk`) is not hard proof by itself. The hard proof is in the **index artifacts**:
+
+- Disk index: `*.pq.disk.meta.json`
+- Memory PQ:  `*.pq.meta.json` (but not `*.pq.disk.meta.json`)
+
+This repo includes a small scanner:
+
+```bash
+python3 tools/verify_disk_index.py result/<dataset>/<run_id>
+```
+
+Example:
+
+```bash
+python3 tools/verify_disk_index.py \
+  result/dbpedia-openai-1000k-angular/20260227-2200-all_pq_disk_96L200-gnr-ap06
+```
+
 Outputs:
 
 - `outputs/output.build.json` (if stage includes build)
