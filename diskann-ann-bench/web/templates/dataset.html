@@ -6,6 +6,14 @@
     <form class="actions" method="get" action="/dataset/{{ dataset | urlencode }}">
       <input class="input" type="text" name="q" value="{{ q or '' }}" placeholder="filter run id / name" />
       <input class="input" type="text" name="mode" value="{{ mode or default_mode }}" placeholder="name / mode (default ann_bench_diskann_rs)" />
+      <select class="input" name="stage" title="stage">
+        <option value="" {% if not stage_filter %}selected{% endif %}>stage: all</option>
+        <option value="build" {% if (stage_filter or '')|lower == 'build' %}selected{% endif %}>build</option>
+        <option value="search" {% if (stage_filter or '')|lower == 'search' %}selected{% endif %}>search</option>
+        <option value="both" {% if (stage_filter or '')|lower in ['both','build+search','build_search','buildsearch'] %}selected{% endif %}>build+search</option>
+        <option value="none" {% if (stage_filter or '')|lower in ['none','na','n/a'] %}selected{% endif %}>none</option>
+      </select>
+      <input class="input" type="text" name="cpu" value="{{ cpu_filter or '' }}" placeholder="cpu model (substring)" />
       <input class="input" type="text" name="cpu_bind" value="{{ cpu_bind_filter or '' }}" placeholder="cpu bind (e.g. 0-16)" />
       <select class="input" name="batch" title="query mode">
         <option value="" {% if not batch_filter %}selected{% endif %}>batch: all</option>
@@ -19,6 +27,8 @@
     <form id="delete-runs-form" class="actions" method="post" action="/dataset/{{ dataset | urlencode }}/delete" style="margin-top:8px">
       <input type="hidden" name="q" value="{{ q or '' }}" />
       <input type="hidden" name="mode" value="{{ mode or default_mode }}" />
+      <input type="hidden" name="stage" value="{{ stage_filter or '' }}" />
+      <input type="hidden" name="cpu" value="{{ cpu_filter or '' }}" />
       <input type="hidden" name="cpu_bind" value="{{ cpu_bind_filter or '' }}" />
       <input type="hidden" name="batch" value="{{ batch_filter or '' }}" />
       <button class="btn" type="submit">Delete selected runs</button>
@@ -37,9 +47,13 @@
         <tr>
           <th><input id="select-all-runs" type="checkbox" title="select all" /></th>
           <th data-sort="string" style="cursor:pointer">run_id <span class="sort-arrow"></span></th>
-          <th data-sort="string" style="cursor:pointer">name <span class="sort-arrow"></span></th>
+          <th data-sort="string" style="cursor:pointer">stage <span class="sort-arrow"></span></th>
+          <th data-sort="string" style="cursor:pointer">time <span class="sort-arrow"></span></th>
+          <th data-sort="string" style="cursor:pointer">model <span class="sort-arrow"></span></th>
+          <th data-sort="string" style="cursor:pointer">mode <span class="sort-arrow"></span></th>
           <th data-sort="string" style="cursor:pointer">query <span class="sort-arrow"></span></th>
           <th data-sort="string" style="cursor:pointer">memory <span class="sort-arrow"></span></th>
+          <th data-sort="string" style="cursor:pointer">cpu_model <span class="sort-arrow"></span></th>
           <th data-sort="string" style="cursor:pointer">cpu_bind <span class="sort-arrow"></span></th>
         </tr>
       </thead>
@@ -48,9 +62,13 @@
           <tr>
             <td><input form="delete-runs-form" type="checkbox" name="run_ids" value="{{ r.id }}" /></td>
             <td><a href="/run/{{ dataset | urlencode }}/{{ r.id | urlencode }}">{{ r.id }}</a></td>
-            <td><span class="badge {{ 'ok' if r.name else '' }}">{{ r.name or r.mode or '' }}</span></td>
+            <td class="small">{{ r.stage or '' }}</td>
+            <td class="small">{{ r.time or '' }}</td>
+            <td><span class="badge {{ 'ok' if r.name else '' }}">{{ r.name or '' }}</span></td>
+            <td class="small">{{ r.mode or '' }}</td>
             <td class="small">{{ r.query_mode or '' }}</td>
             <td class="small">{{ r.memory or '' }}</td>
+            <td class="small">{{ r.cpu_model or '' }}</td>
             <td class="small">{{ r.cpu_bind or '' }}</td>
           </tr>
         {% endfor %}

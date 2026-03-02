@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from datetime import datetime
 import html
 import io
 import json
@@ -79,6 +80,23 @@ def _read_text_if_exists(path: Path, *, max_bytes: int = 2_000_000) -> str | Non
         if path.stat().st_size > max_bytes:
             return path.read_text(encoding="utf-8", errors="replace")[:max_bytes] + "\n<truncated>\n"
         return path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+
+
+def _safe_mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except Exception:
+        return None
+
+
+def _fmt_ts_local(ts: float | None) -> str | None:
+    if ts is None:
+        return None
+    try:
+        # Use a lexicographically sortable format.
+        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return None
 
@@ -618,6 +636,9 @@ def create_app(settings: Settings) -> FastAPI:
         mode = request.query_params.get("mode")
         mode = (mode.strip() if isinstance(mode, str) else "")
         mode_norm = (mode.lower().strip() if mode else "") or default_mode
+        stage_filter = request.query_params.get("stage")
+        stage_filter = (stage_filter.strip() if isinstance(stage_filter, str) else "")
+        stage_filter_norm = stage_filter.lower().strip()
         cpu_filter = request.query_params.get("cpu")
         cpu_filter = (cpu_filter.strip() if isinstance(cpu_filter, str) else "")
         cpu_filter_norm = cpu_filter.lower()
@@ -662,8 +683,45 @@ def create_app(settings: Settings) -> FastAPI:
             is_batch = batch_norm in {"1", "true", "yes", "y", "batch"}
             query_mode = "batch" if is_batch else "single"
 
+            has_build = (run_dir / "outputs" / "output.build.json").is_file()
+            has_search = (run_dir / "outputs" / "output.search.json").is_file()
+            if has_build and has_search:
+                stage = "build+search"
+            elif has_build:
+                stage = "build"
+            elif has_search:
+                stage = "search"
+            else:
+                stage = None
+
+            # Best-effort run timestamp: prefer output JSON mtime, fallback to summary, then run_dir.
+            ts = (
+                _safe_mtime(run_dir / "outputs" / "output.search.json")
+                or _safe_mtime(run_dir / "outputs" / "output.build.json")
+                or _safe_mtime(run_dir / "outputs" / "summary.tsv")
+                or _safe_mtime(run_dir)
+            )
+            run_time = _fmt_ts_local(ts)
+
             if mode_norm and mode_norm not in (run_mode or "").strip().lower() and mode_norm not in (run_name or "").strip().lower():
                 continue
+            if stage_filter_norm:
+                # Support common selectors. Keep it permissive (substring match) for ad-hoc filters.
+                if stage_filter_norm in {"build"}:
+                    if not has_build:
+                        continue
+                elif stage_filter_norm in {"search"}:
+                    if not has_search:
+                        continue
+                elif stage_filter_norm in {"both", "build+search", "build_search", "buildsearch"}:
+                    if not (has_build and has_search):
+                        continue
+                elif stage_filter_norm in {"none", "na", "n/a"}:
+                    if has_build or has_search:
+                        continue
+                else:
+                    if stage_filter_norm not in ((stage or "").lower()):
+                        continue
             if cpu_filter_norm and cpu_filter_norm not in (cpu_model or "").lower():
                 continue
             if cpu_bind_filter_norm and cpu_bind_filter_norm not in (cpu_bind or "").lower():
@@ -685,6 +743,8 @@ def create_app(settings: Settings) -> FastAPI:
                     "mode": run_mode,
                     "name": run_name,
                     "query_mode": query_mode,
+                    "stage": stage,
+                    "time": run_time,
                     "cpu_model": cpu_model,
                     "memory": memory,
                     "cpu_bind": cpu_bind,
@@ -695,8 +755,8 @@ def create_app(settings: Settings) -> FastAPI:
                         or (run_dir / "outputs" / "summary.tsv").is_file()
                     ),
                     "has_details": (run_dir / "outputs" / "details.md").is_file(),
-                    "has_build": (run_dir / "outputs" / "output.build.json").is_file(),
-                    "has_search": (run_dir / "outputs" / "output.search.json").is_file(),
+                    "has_build": has_build,
+                    "has_search": has_search,
                 }
             )
 
@@ -709,6 +769,7 @@ def create_app(settings: Settings) -> FastAPI:
                 "runs": runs,
                 "q": q or "",
                 "mode": mode,
+                "stage_filter": stage_filter,
                 "cpu_filter": cpu_filter,
                 "cpu_bind_filter": cpu_bind_filter,
                 "batch_filter": batch_filter,
@@ -730,6 +791,7 @@ def create_app(settings: Settings) -> FastAPI:
 
         q = (str(form.get("q") or "")).strip()
         mode = (str(form.get("mode") or "")).strip()
+        stage_filter = (str(form.get("stage") or "")).strip()
         cpu_filter = (str(form.get("cpu") or "")).strip()
         cpu_bind_filter = (str(form.get("cpu_bind") or "")).strip()
         batch_filter = (str(form.get("batch") or "")).strip()
@@ -750,6 +812,8 @@ def create_app(settings: Settings) -> FastAPI:
             params["q"] = q
         if mode:
             params["mode"] = mode
+        if stage_filter:
+            params["stage"] = stage_filter
         if cpu_filter:
             params["cpu"] = cpu_filter
         if cpu_bind_filter:
