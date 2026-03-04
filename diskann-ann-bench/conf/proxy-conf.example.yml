@@ -3,8 +3,7 @@
 # Copy this file to `proxy-conf.yml` if you need proxies.
 # The top-level keys are remote host/IP names (matching remote-conf.host).
 
-101.43.139.29:
-  # Allowed: socks / socks5 / http
-  type: socks
+101.42.249.205:
+  type: socks5
   host: proxy.xxx.com
   port: 1080

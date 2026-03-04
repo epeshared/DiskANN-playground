@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
 import os
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -31,6 +34,83 @@ try:
     import psutil  # type: ignore
 except Exception:  # pragma: no cover
     psutil = None
+
+
+def _truthy_env(name: str) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return False
+    return v.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _run_emon_collect(emon_dir: Path) -> subprocess.Popen[bytes] | None:
+    if shutil.which("emon") is None:
+        raise FileNotFoundError("emon not found in PATH")
+
+    emon_dir.mkdir(parents=True, exist_ok=True)
+    emon_dat = emon_dir / "emon.dat"
+    emon_err = emon_dir / "emon.stderr.txt"
+
+    out_f = open(emon_dat, "wb")
+    err_f = open(emon_err, "wb")
+    try:
+        proc = subprocess.Popen(["emon", "-collect-edp"], cwd=str(emon_dir), stdout=out_f, stderr=err_f)
+    except Exception:
+        with contextlib.suppress(Exception):
+            out_f.close()
+        with contextlib.suppress(Exception):
+            err_f.close()
+        raise
+
+    # Ensure files stay open for the lifetime of the child.
+    proc._diskann_out_f = out_f  # type: ignore[attr-defined]
+    proc._diskann_err_f = err_f  # type: ignore[attr-defined]
+    return proc
+
+
+def _run_emon_stop() -> None:
+    if shutil.which("emon") is None:
+        raise FileNotFoundError("emon not found in PATH")
+    subprocess.run(["emon", "-stop"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _run_emon_process_to_xlsx(emon_dir: Path, outputs_dir: Path) -> None:
+    if shutil.which("emon") is None:
+        raise FileNotFoundError("emon not found in PATH")
+
+    cfg = Path("/opt/intel/sep/config/edp/pyedp_config.txt")
+    if not cfg.is_file():
+        raise FileNotFoundError(f"emon pyedp config not found: {cfg}")
+
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(
+        ["emon", "-process-pyedp", str(cfg)],
+        cwd=str(emon_dir),
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"emon -process-pyedp failed (rc={proc.returncode})")
+
+    summary_src = emon_dir / "summary.xlsx"
+    if not summary_src.is_file():
+        raise RuntimeError("emon summary.xlsx not generated")
+
+    summary_dst = outputs_dir / "summary.xlsx"
+    with contextlib.suppress(Exception):
+        if summary_dst.exists():
+            summary_dst.unlink()
+    summary_src.replace(summary_dst)
+
+    # Remove other generated files (keep only the moved summary.xlsx).
+    for p in emon_dir.glob("*"):
+        with contextlib.suppress(Exception):
+            if p.is_dir():
+                shutil.rmtree(p)
+            else:
+                p.unlink()
+
 
 
 def _find_workspace_root() -> Path:
@@ -917,13 +997,33 @@ def main() -> int:
 
             with _PeakRssSampler() as rss_sampler:
                 with _PeakDiskIoSampler() as disk_io_sampler:
-                    latencies, ids_only = _run_queries(
-                        algo=algo,
-                        X_test=X_test,
-                        k=int(args.k),
-                        reps=int(args.reps),
-                        batch=bool(args.batch),
-                    )
+                    emon_enabled = _truthy_env("DISKANN_EMON_SEARCH")
+                    emon_dir = Path(args.work_dir) / "data" / "emon"
+                    emon_proc: subprocess.Popen[bytes] | None = None
+                    try:
+                        if emon_enabled:
+                            print(f"[emon] starting collection into: {emon_dir}")
+                            emon_proc = _run_emon_collect(emon_dir)
+
+                        latencies, ids_only = _run_queries(
+                            algo=algo,
+                            X_test=X_test,
+                            k=int(args.k),
+                            reps=int(args.reps),
+                            batch=bool(args.batch),
+                        )
+                    finally:
+                        if emon_enabled:
+                            print("[emon] stopping collection")
+                            _run_emon_stop()
+                            if emon_proc is not None:
+                                with contextlib.suppress(Exception):
+                                    emon_proc.wait(timeout=30)
+                                for attr in ("_diskann_out_f", "_diskann_err_f"):
+                                    with contextlib.suppress(Exception):
+                                        getattr(emon_proc, attr).close()  # type: ignore[misc]
+                            print("[emon] processing emon.dat -> outputs/summary.xlsx")
+                            _run_emon_process_to_xlsx(emon_dir=emon_dir, outputs_dir=Path(args.work_dir) / "outputs")
         finally:
             algo.done()
 

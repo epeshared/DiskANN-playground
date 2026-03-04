@@ -102,6 +102,11 @@ search_repeat_thresh_hold: ""
 # false => per-query loop; true => batch_query.
 batch: false
 
+# If true, run EMON collection+processing around each case's search stage.
+# Requires Intel SEP/EMON on the runner.
+emon_search: false
+emon_path: ""
+
 # CPU affinity for the host runner. Format: "LO-HI" (e.g. "0-16").
 cpu_bind: 0-16
 

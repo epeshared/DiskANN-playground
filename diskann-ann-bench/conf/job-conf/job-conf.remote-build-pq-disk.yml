@@ -55,6 +55,11 @@ run_group_prefix_spherical: ""
 k: 10
 reps: 1
 batch: false
+
+# If true, run EMON collection+processing around each case's search stage.
+# Requires Intel SEP/EMON on the runner.
+emon_search: false
+emon_path: "/opt/intel/sep_private_5.54_linux_0616065395596934e"
 # cpu_bind: 0-16
 
 # Optional override of ann-benchmark diskann_rs/config.yml.

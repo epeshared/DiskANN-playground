@@ -47,6 +47,12 @@ SEARCH_REPEAT=""
 SEARCH_REPEAT_THRESH_HOLD=""
 SEARCH_REPEAT_BANNER_PRINTED=0
 
+# Optional: collect EMON EDP during search (per-case).
+# - emon_search: true/false
+# - emon_path: directory containing sep_vars.sh (e.g. /opt/intel/sep)
+EMON_SEARCH=0
+EMON_PATH=""
+
 # Index cleanup control:
 # - auto: delete indexes only for auto timestamp-based runs (default)
 # - yes: delete created indexes under the run folder
@@ -304,6 +310,8 @@ emit("RUNS_DIR", obj.get("runs_dir"))
 
 emit("SEARCH_REPEAT", obj.get("search_repeat"))
 emit("SEARCH_REPEAT_THRESH_HOLD", obj.get("search_repeat_thresh_hold"))
+emit("EMON_SEARCH", obj.get("emon_search"))
+emit("EMON_PATH", obj.get("emon_path"))
 PY
 }
 
@@ -331,6 +339,22 @@ expand_tilde_path() {
 HDF5="$(expand_tilde_path "${HDF5:-}")"
 RUNS_DIR="$(expand_tilde_path "${RUNS_DIR:-}")"
 INDEX_DIR="$(expand_tilde_path "${INDEX_DIR:-}")"
+EMON_PATH="$(expand_tilde_path "${EMON_PATH:-}")"
+
+if [[ "${EMON_SEARCH:-0}" != "0" ]]; then
+  if [[ -z "${EMON_PATH:-}" ]]; then
+    echo "ERROR: emon_search is enabled but emon_path is empty in job conf." >&2
+    echo "Set emon_path to the SEP install dir containing sep_vars.sh (e.g. /opt/intel/sep)." >&2
+    exit 2
+  fi
+  if [[ ! -f "${EMON_PATH%/}/sep_vars.sh" ]]; then
+    echo "ERROR: sep_vars.sh not found: ${EMON_PATH%/}/sep_vars.sh" >&2
+    exit 2
+  fi
+  # Load Intel SEP environment (adds emon to PATH, etc.).
+  # shellcheck disable=SC1090
+  source "${EMON_PATH%/}/sep_vars.sh"
+fi
 
 export DISKANN_RS_NATIVE_PROFILE
 export DISKANN_RS_FIT_BATCH_SIZE
@@ -1540,7 +1564,15 @@ run_one() {
     cmd+=(--index-dir "$prior_index_dir")
   fi
   cmd+=("${extra_args[@]}")
+  if [[ ( "$stage_to_use" == "search" || "$stage_to_use" == "all" ) && "${EMON_SEARCH:-0}" != "0" ]]; then
+    export DISKANN_EMON_SEARCH=1
+  else
+    unset DISKANN_EMON_SEARCH 2>/dev/null || true
+  fi
+
   "${cmd[@]}"
+
+  unset DISKANN_EMON_SEARCH 2>/dev/null || true
 
   # Mark completion and refresh aggregated outputs.
   touch "$(case_done_marker_path "$work_dir_full" "$stage_to_use")"
